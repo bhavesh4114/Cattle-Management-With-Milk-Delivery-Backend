@@ -1,0 +1,104 @@
+CREATE TABLE "Cow" (
+    "id" SERIAL NOT NULL,
+    "tagNo" TEXT NOT NULL,
+    "name" TEXT NOT NULL,
+    "breed" TEXT NOT NULL,
+    "age" INTEGER NOT NULL,
+    "gender" TEXT NOT NULL,
+    "status" TEXT NOT NULL DEFAULT 'Active',
+    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT "Cow_pkey" PRIMARY KEY ("id")
+);
+
+CREATE TABLE "FoodPurchase" (
+    "id" SERIAL NOT NULL,
+    "itemName" TEXT NOT NULL,
+    "quantityKg" DOUBLE PRECISION NOT NULL,
+    "price" DOUBLE PRECISION NOT NULL,
+    "supplier" TEXT,
+    "purchasedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT "FoodPurchase_pkey" PRIMARY KEY ("id")
+);
+
+CREATE TABLE "CowFoodRecord" (
+    "id" SERIAL NOT NULL,
+    "cowId" INTEGER NOT NULL,
+    "foodType" TEXT NOT NULL,
+    "quantityKg" DOUBLE PRECISION NOT NULL,
+    "fedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT "CowFoodRecord_pkey" PRIMARY KEY ("id")
+);
+
+CREATE TABLE "FoodIntake" (
+    "id" SERIAL NOT NULL,
+    "foodType" TEXT NOT NULL,
+    "quantityKg" DOUBLE PRECISION NOT NULL,
+    "notes" TEXT,
+    "recordedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT "FoodIntake_pkey" PRIMARY KEY ("id")
+);
+
+CREATE TABLE "MilkRecord" (
+    "id" SERIAL NOT NULL,
+    "cowId" INTEGER NOT NULL,
+    "liters" DOUBLE PRECISION NOT NULL,
+    "shift" TEXT NOT NULL,
+    "milkedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT "MilkRecord_pkey" PRIMARY KEY ("id")
+);
+
+CREATE TABLE "CowSale" (
+    "id" SERIAL NOT NULL,
+    "cowId" INTEGER NOT NULL,
+    "buyer" TEXT NOT NULL,
+    "amount" DOUBLE PRECISION NOT NULL,
+    "soldAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT "CowSale_pkey" PRIMARY KEY ("id")
+);
+
+CREATE TABLE "Treatment" (
+    "id" SERIAL NOT NULL,
+    "cowId" INTEGER NOT NULL,
+    "diagnosis" TEXT NOT NULL,
+    "medicine" TEXT NOT NULL,
+    "cost" DOUBLE PRECISION NOT NULL,
+    "treatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT "Treatment_pkey" PRIMARY KEY ("id")
+);
+
+CREATE TABLE "Item" (
+    "id" SERIAL NOT NULL,
+    "name" TEXT NOT NULL,
+    "category" TEXT NOT NULL,
+    "quantity" DOUBLE PRECISION NOT NULL,
+    "unit" TEXT NOT NULL,
+    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT "Item_pkey" PRIMARY KEY ("id")
+);
+
+CREATE TABLE "Order" (
+    "id" SERIAL NOT NULL,
+    "customer" TEXT NOT NULL,
+    "itemName" TEXT NOT NULL,
+    "quantity" DOUBLE PRECISION NOT NULL,
+    "amount" DOUBLE PRECISION NOT NULL,
+    "status" TEXT NOT NULL DEFAULT 'Pending',
+    "orderedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT "Order_pkey" PRIMARY KEY ("id")
+);
+
+CREATE TABLE "CowDeath" (
+    "id" SERIAL NOT NULL,
+    "cowId" INTEGER NOT NULL,
+    "reason" TEXT NOT NULL,
+    "deathAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT "CowDeath_pkey" PRIMARY KEY ("id")
+);
+
+CREATE UNIQUE INDEX "Cow_tagNo_key" ON "Cow"("tagNo");
+
+ALTER TABLE "CowFoodRecord" ADD CONSTRAINT "CowFoodRecord_cowId_fkey" FOREIGN KEY ("cowId") REFERENCES "Cow"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+ALTER TABLE "MilkRecord" ADD CONSTRAINT "MilkRecord_cowId_fkey" FOREIGN KEY ("cowId") REFERENCES "Cow"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+ALTER TABLE "CowSale" ADD CONSTRAINT "CowSale_cowId_fkey" FOREIGN KEY ("cowId") REFERENCES "Cow"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+ALTER TABLE "Treatment" ADD CONSTRAINT "Treatment_cowId_fkey" FOREIGN KEY ("cowId") REFERENCES "Cow"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+ALTER TABLE "CowDeath" ADD CONSTRAINT "CowDeath_cowId_fkey" FOREIGN KEY ("cowId") REFERENCES "Cow"("id") ON DELETE CASCADE ON UPDATE CASCADE;
