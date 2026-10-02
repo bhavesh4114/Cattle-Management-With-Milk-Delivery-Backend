@@ -176,8 +176,11 @@ exports.assignDelivery = async (req, res) => {
                 deliveryBoyName: boy?.name });
         }
         await prisma.deliveryAssignment.updateMany({ where: { orderType, orderId: orderIdInt, isActive: true }, data: { isActive: false } });
+        const cryptoLib = require('crypto');
+        const deliveryOtp = Math.floor(1000 + Math.random() * 9000).toString();
+        const qrCode = cryptoLib.randomUUID();
         const assignment = await prisma.deliveryAssignment.create({
-            data: { orderType, orderId: orderIdInt, deliveryBoyId: boyId, assignedById: adminId, deliveryStatus: 'Assigned', notes: notes||null, isActive: true }
+            data: { orderType, orderId: orderIdInt, deliveryBoyId: boyId, assignedById: adminId, deliveryStatus: 'Assigned', notes: notes||null, isActive: true, deliveryOtp, qrCode, deliveryDate: todayMidnight() }
         });
         if (orderType === 'trial') { await prisma.milkTrial.update({ where: { id: orderIdInt }, data: { deliveryBoyId: boyId, deliveryStatus: 'Assigned' } }); }
         else { await prisma.milkSubscription.update({ where: { id: orderIdInt }, data: { deliveryBoyId: boyId, deliveryStatus: 'Assigned' } }); }
@@ -205,8 +208,8 @@ exports.getMyDeliveries = async (req, res) => {
         });
         const enriched = await Promise.all(assignments.map(async (a) => {
             let order = a.orderType === 'trial'
-                ? await prisma.milkTrial.findUnique({ where: { id: a.orderId } })
-                : await prisma.milkSubscription.findUnique({ where: { id: a.orderId } });
+                ? await prisma.milkTrial.findUnique({ where: { id: a.orderId }, include: { product: true } })
+                : await prisma.milkSubscription.findUnique({ where: { id: a.orderId }, include: { product: true } });
             return { ...a, order };
         }));
         res.json(enriched.filter(e => e.order !== null));
@@ -220,7 +223,17 @@ exports.updateDeliveryStatus = async (req, res) => {
         const deliveryBoyId = req.admin.id;
         const assignment = await prisma.deliveryAssignment.findFirst({ where: { id: parseInt(assignmentId), deliveryBoyId, isActive: true } });
         if (!assignment) return res.status(404).json({ message: 'Assignment not found' });
-        const updated = await prisma.deliveryAssignment.update({ where: { id: parseInt(assignmentId) }, data: { deliveryStatus, notes: notes||assignment.notes } });
+
+        // Auto-generate OTP + QR when delivery boy Accepts the order (so user gets OTP immediately)
+        let extraData = { deliveryStatus, notes: notes || assignment.notes };
+        if (deliveryStatus === 'Accepted' && !assignment.deliveryOtp) {
+            const crypto = require('crypto');
+            extraData.qrCode = crypto.randomUUID();
+            extraData.deliveryOtp = Math.floor(1000 + Math.random() * 9000).toString();
+            extraData.deliveryDate = todayMidnight();
+        }
+
+        const updated = await prisma.deliveryAssignment.update({ where: { id: parseInt(assignmentId) }, data: extraData });
         if (assignment.orderType === 'trial') { await prisma.milkTrial.update({ where: { id: assignment.orderId }, data: { deliveryStatus } }); }
         else { await prisma.milkSubscription.update({ where: { id: assignment.orderId }, data: { deliveryStatus } }); }
         if (deliveryStatus === 'Rejected') { await prisma.deliveryAssignment.update({ where: { id: parseInt(assignmentId) }, data: { isActive: false } }); }
@@ -249,7 +262,8 @@ exports.getMyNotifications = async (req, res) => {
 // ✅ Order Tracking Timeline for User
 exports.getOrderTrackingStatus = async (req, res) => {
     try {
-        const { orderType, orderId } = req.params;
+        let { orderType, orderId } = req.query;
+        if (orderType === 'subscription') orderType = 'sub';
         const orderIdInt = parseInt(orderId);
 
         let order = orderType === 'trial'
@@ -331,6 +345,19 @@ exports.getOrderTrackingStatus = async (req, res) => {
             }
         ];
 
+        // Auto-generate OTP for any active assignment that doesn't have one yet
+        if (assignment && !assignment.deliveryOtp) {
+            const cryptoLib = require('crypto');
+            const newOtp = Math.floor(1000 + Math.random() * 9000).toString();
+            const newQr = assignment.qrCode || cryptoLib.randomUUID();
+            await prisma.deliveryAssignment.update({
+                where: { id: assignment.id },
+                data: { deliveryOtp: newOtp, qrCode: newQr, deliveryDate: todayMidnight() }
+            });
+            assignment.deliveryOtp = newOtp;
+            assignment.qrCode = newQr;
+        }
+
         res.json({
             orderId: order.id,
             orderType,
@@ -342,8 +369,163 @@ exports.getOrderTrackingStatus = async (req, res) => {
             paymentStatus: orderType === 'sub' ? order.paymentStatus : null,
             deliveryStatus,
             deliveryBoyName: assignment?.deliveryBoy?.name || null,
+            deliveryOtp: assignment?.deliveryOtp || null,
+            isQrScanned: assignment?.isQrScanned || false,
             timeline
         });
+    } catch (error) { res.status(500).json({ message: 'Server error', error: error.message }); }
+};
+
+
+
+// ========================
+// Security: QR and OTP Flow
+// ========================
+
+const crypto = require('crypto');
+
+exports.generateDailyDeliveries = async (req, res) => {
+    try {
+        const adminId = req.admin.id;
+        const today = todayMidnight();
+        
+        // Find all active assignments for today that don't have QR yet
+        const assignments = await prisma.deliveryAssignment.findMany({
+            where: { isActive: true, qrCode: null }
+        });
+        
+        let generatedCount = 0;
+        for (const assignment of assignments) {
+            const qrCode = crypto.randomUUID();
+            const deliveryOtp = Math.floor(1000 + Math.random() * 9000).toString(); // 4-digit OTP
+            
+            await prisma.deliveryAssignment.update({
+                where: { id: assignment.id },
+                data: { qrCode, deliveryOtp, deliveryDate: today }
+            });
+            generatedCount++;
+        }
+        
+        res.json({ message: `Generated QR codes for ${generatedCount} deliveries`, count: generatedCount });
+    } catch (error) { res.status(500).json({ message: 'Server error', error: error.message }); }
+};
+
+exports.scanQRCode = async (req, res) => {
+    try {
+        const { qrCode } = req.body;
+        const deliveryBoyId = req.admin.id;
+        
+        const assignment = await prisma.deliveryAssignment.findUnique({
+            where: { qrCode }
+        });
+        
+        if (!assignment) {
+            return res.status(404).json({ message: 'Invalid or expired QR code.' });
+        }
+        
+        if (assignment.deliveryBoyId !== deliveryBoyId) {
+            return res.status(403).json({ message: 'This delivery is assigned to another delivery boy.' });
+        }
+        
+        if (assignment.deliveryStatus === 'Delivered' || assignment.isOtpVerified) {
+            return res.status(400).json({ message: 'This order has already been delivered.' });
+        }
+        
+        // Mark QR as scanned
+        await prisma.deliveryAssignment.update({
+            where: { id: assignment.id },
+            data: { isQrScanned: true, deliveryStatus: 'Reached Customer' }
+        });
+        
+        // Fetch order details to show to delivery boy
+        let order = assignment.orderType === 'trial'
+            ? await prisma.milkTrial.findUnique({ where: { id: assignment.orderId }, include: { product: true } })
+            : await prisma.milkSubscription.findUnique({ where: { id: assignment.orderId }, include: { product: true } });
+            
+        res.json({ message: 'QR Code verified successfully.', assignment, order });
+    } catch (error) { res.status(500).json({ message: 'Server error', error: error.message }); }
+};
+
+exports.verifyDeliveryOTP = async (req, res) => {
+    try {
+        const { assignmentId, otp } = req.body;
+        const deliveryBoyId = req.admin.id;
+        
+        const ids = Array.isArray(assignmentId) ? assignmentId : [assignmentId];
+        
+        const assignments = await prisma.deliveryAssignment.findMany({
+            where: { id: { in: ids.map(id => parseInt(id)) }, deliveryBoyId, isActive: true }
+        });
+        
+        if (assignments.length === 0) {
+            return res.status(404).json({ message: 'Assignments not found.' });
+        }
+        
+        // If the OTP matches ANY of the assignments in the group, we accept it for ALL of them.
+        const cleanOtp = String(otp).trim();
+        const isValid = assignments.some(a => a.deliveryOtp && String(a.deliveryOtp).trim() === cleanOtp);
+        if (!isValid) {
+            return res.status(400).json({ message: 'Invalid OTP. Please try again.' });
+        }
+        
+        // Mark all as verified and delivered
+        await prisma.deliveryAssignment.updateMany({
+            where: { id: { in: assignments.map(a => a.id) } },
+            data: { isOtpVerified: true, deliveryStatus: 'Delivered' }
+        });
+        
+        // Update main order status
+        for (const assignment of assignments) {
+            if (assignment.orderType === 'trial') {
+                await prisma.milkTrial.update({ where: { id: assignment.orderId }, data: { deliveryStatus: 'Delivered' } });
+            } else {
+                await prisma.milkSubscription.update({ where: { id: assignment.orderId }, data: { deliveryStatus: 'Delivered' } });
+            }
+        }
+        
+        res.json({ message: 'OTP verified! Deliveries marked as complete.', assignments });
+    } catch (error) { res.status(500).json({ message: 'Server error', error: error.message }); }
+};
+
+exports.getTodayDeliveryOTP = async (req, res) => {
+    try {
+        let { orderType, orderId } = req.query;
+        if (orderType === 'subscription') orderType = 'sub';
+        const orderIdInt = parseInt(orderId);
+        
+        // Try active assignment first, then fall back to any recent assignment
+        let assignment = await prisma.deliveryAssignment.findFirst({
+            where: { orderType, orderId: orderIdInt, isActive: true },
+            orderBy: { createdAt: 'desc' }
+        });
+        
+        // Fallback: find most recent assignment even if not active
+        if (!assignment) {
+            assignment = await prisma.deliveryAssignment.findFirst({
+                where: { orderType, orderId: orderIdInt },
+                orderBy: { createdAt: 'desc' }
+            });
+        }
+        
+        if (!assignment) {
+            // Return 200 with null OTP to avoid 404 red errors in network tab
+            return res.json({ otp: null, qrScanned: false, delivered: false });
+        }
+        
+        // Auto-generate OTP if missing
+        if (!assignment.deliveryOtp) {
+            const cryptoLib = require('crypto');
+            const newOtp = Math.floor(1000 + Math.random() * 9000).toString();
+            const newQr = assignment.qrCode || cryptoLib.randomUUID();
+            await prisma.deliveryAssignment.update({
+                where: { id: assignment.id },
+                data: { deliveryOtp: newOtp, qrCode: newQr, deliveryDate: todayMidnight() }
+            });
+            assignment.deliveryOtp = newOtp;
+            console.log(`[OTP] Auto-generated OTP ${newOtp} for assignment #${assignment.id} (${orderType} #${orderIdInt})`);
+        }
+        
+        res.json({ otp: assignment.deliveryOtp, qrScanned: assignment.isQrScanned, delivered: assignment.isOtpVerified });
     } catch (error) { res.status(500).json({ message: 'Server error', error: error.message }); }
 };
 

@@ -158,6 +158,7 @@ exports.getAllTrials = async (req, res) => {
         const adminId = req.admin.id;
         const trials = await prisma.milkTrial.findMany({ 
             where: { adminId },
+            include: { product: true },
             orderBy: { createdAt: 'desc' }
         });
         res.json(trials);
@@ -171,6 +172,7 @@ exports.getMyTrials = async (req, res) => {
         const userId = req.admin.id;
         const trials = await prisma.milkTrial.findMany({
             where: { userId },
+            include: { product: true },
             orderBy: { createdAt: 'desc' }
         });
         res.json(trials);
@@ -239,6 +241,7 @@ exports.getAllSubscriptions = async (req, res) => {
         const adminId = req.admin.id;
         const subs = await prisma.milkSubscription.findMany({ 
             where: { adminId },
+            include: { product: true },
             orderBy: { createdAt: 'desc' }
         });
         res.json(subs);
@@ -252,6 +255,7 @@ exports.getMySubscriptions = async (req, res) => {
         const userId = req.admin.id;
         const subs = await prisma.milkSubscription.findMany({ 
             where: { userId },
+            include: { product: true },
             orderBy: { createdAt: 'desc' }
         });
         res.json(subs);

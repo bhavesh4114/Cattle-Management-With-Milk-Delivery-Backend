@@ -28,6 +28,12 @@ router.put('/status/:assignmentId', dc.updateDeliveryStatus);
 router.get('/my-notifications', dc.getMyNotifications);
 
 // Order Tracking (User side)
-router.get('/track/:orderType/:orderId', dc.getOrderTrackingStatus);
+router.get('/track', dc.getOrderTrackingStatus);
+router.get('/otp-info', dc.getTodayDeliveryOTP);
+
+// Security: QR and OTP
+router.post('/generate-daily-qr', dc.generateDailyDeliveries);
+router.post('/scan-qr', dc.scanQRCode);
+router.post('/verify-otp', dc.verifyDeliveryOTP);
 
 module.exports = router;

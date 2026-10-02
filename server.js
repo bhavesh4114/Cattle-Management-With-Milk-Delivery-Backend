@@ -21,6 +21,7 @@ const staffMilkRoutes = require("./src/routes/staffMilkRoutes");
 const milkSubscriptionRoutes = require("./src/routes/milkSubscriptionRoutes");
 const deliveryRoutes = require("./src/routes/deliveryRoutes");
 const productRoutes = require("./src/routes/productRoutes");
+const alertRoutes = require("./src/routes/alertRoutes");
 
 const app = express();
 app.use(express.json({ limit: "50mb" }));
@@ -46,9 +47,10 @@ app.use("/api/staff-milk", staffMilkRoutes);
 app.use("/api/milk-module", milkSubscriptionRoutes);
 app.use("/api/delivery", deliveryRoutes);
 app.use("/api/products", productRoutes);
+app.use("/api/alerts", alertRoutes);
 
 const PORT = process.env.PORT || 5100;
-const server = app.listen(PORT, () => {
+const server = app.listen(PORT, "0.0.0.0", () => {
   console.log(`Backend running successfully on port ${PORT}`);
 });
 
@@ -67,4 +69,4 @@ process.on("SIGTERM", () => {
 
 // Trigger restart 3
 
-// Trigger restart 4
+// Trigger restart 6
