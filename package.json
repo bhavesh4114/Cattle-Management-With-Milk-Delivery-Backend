@@ -30,5 +30,10 @@
   },
   "devDependencies": {
     "nodemon": "^3.1.14"
+  },
+  "allowScripts": {
+    "@prisma/engines@7.9.1": true,
+    "bcrypt@6.0.0": true,
+    "prisma@7.9.1": true
   }
 }
