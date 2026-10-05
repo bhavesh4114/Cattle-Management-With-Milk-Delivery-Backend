@@ -31,13 +31,24 @@ app.use(express.urlencoded({ limit: "50mb", extended: true }));
 const allowedOrigins = [
   process.env.FRONTEND_URL,
   "https://cattle-management-with-milk-deliver.vercel.app",
+  "https://cattle-management-with-milk-delivery-frontend.vercel.app",
   "http://localhost:5173",
   "http://localhost:3000",
 ].filter(Boolean);
 
+const allowedOriginPatterns = [
+  /^https:\/\/cattle-management-with-milk-delivery-frontend-[a-z0-9-]+\.vercel\.app$/i,
+  /^https:\/\/cattle-management-with-milk-deliver-[a-z0-9-]+\.vercel\.app$/i,
+];
+
+const isAllowedOrigin = (origin) => (
+  allowedOrigins.includes(origin) ||
+  allowedOriginPatterns.some((pattern) => pattern.test(origin))
+);
+
 app.use(cors({
   origin(origin, callback) {
-    if (!origin || allowedOrigins.includes(origin)) {
+    if (!origin || isAllowedOrigin(origin)) {
       return callback(null, true);
     }
 
