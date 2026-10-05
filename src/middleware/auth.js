@@ -9,6 +9,11 @@ const authenticateAdmin = async (req, res, next) => {
   }
 
   try {
+    if (!process.env.JWT_SECRET) {
+      console.error("[auth.middleware] JWT_SECRET is not configured");
+      return res.status(500).json({ message: "Auth configuration error" });
+    }
+
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
     const prisma = require("../config/db");
 

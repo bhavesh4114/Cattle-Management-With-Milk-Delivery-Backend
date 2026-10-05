@@ -27,8 +27,36 @@ const userQrRoutes = require("./src/routes/userQrRoutes");
 const app = express();
 app.use(express.json({ limit: "50mb" }));
 app.use(express.urlencoded({ limit: "50mb", extended: true }));
-app.use(cors());
+
+const allowedOrigins = [
+  process.env.FRONTEND_URL,
+  "https://cattle-management-with-milk-deliver.vercel.app",
+  "http://localhost:5173",
+  "http://localhost:3000",
+].filter(Boolean);
+
+app.use(cors({
+  origin(origin, callback) {
+    if (!origin || allowedOrigins.includes(origin)) {
+      return callback(null, true);
+    }
+
+    return callback(new Error(`CORS blocked origin: ${origin}`));
+  },
+  credentials: false,
+}));
+
 app.use("/uploads", express.static(path.join(__dirname, "uploads")));
+
+app.get("/api/health", (req, res) => {
+  res.json({
+    status: "ok",
+    environment: process.env.NODE_ENV || "development",
+    databaseUrlConfigured: Boolean(process.env.DATABASE_URL),
+    jwtSecretConfigured: Boolean(process.env.JWT_SECRET),
+    frontendUrlConfigured: Boolean(process.env.FRONTEND_URL),
+  });
+});
 
 // Mount Routes
 app.use("/api/admin/auth", authRoutes);
@@ -51,17 +79,34 @@ app.use("/api/products", productRoutes);
 app.use("/api/alerts", alertRoutes);
 app.use("/api/users", userQrRoutes);
 
-const PORT = process.env.PORT || 5100;
-const server = app.listen(PORT, "0.0.0.0", () => {
-  console.log(`Backend running successfully on port ${PORT}`);
+app.use((err, req, res, next) => {
+  console.error("[server] request failed", {
+    method: req.method,
+    path: req.originalUrl,
+    name: err.name,
+    message: err.message,
+    code: err.code,
+  });
+
+  if (res.headersSent) {
+    return next(err);
+  }
+
+  return res.status(500).json({ message: "Internal server error" });
 });
 
-const keepAlive = setInterval(() => { }, 1 << 30);
+if (require.main === module) {
+  const PORT = process.env.PORT || 5100;
+  const server = app.listen(PORT, "0.0.0.0", () => {
+    console.log(`Backend running successfully on port ${PORT}`);
+  });
 
-process.on("SIGTERM", () => {
-  clearInterval(keepAlive);
-  server.close(() => process.exit(0));
-});
+  process.on("SIGTERM", () => {
+    server.close(() => process.exit(0));
+  });
+}
+
+module.exports = app;
 
 // Trigger restart
 
