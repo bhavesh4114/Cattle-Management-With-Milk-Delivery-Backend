@@ -8,12 +8,14 @@ const adapter = new PrismaPg({
 const prisma =new PrismaClient({ adapter })
 
 async function main() {
-    const hashedPassword=await bcrypt.hash("admin123",10)
+    const hashedPassword=await bcrypt.hash("Admin123",10)
     await prisma.admin.upsert({
         where:{
             email:"admin@gmail.com",
         },
-        update:{},
+        update:{
+            password:hashedPassword,
+        },
         create:{
             name:"admin",
             email:"admin@gmail.com",

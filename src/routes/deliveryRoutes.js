@@ -29,11 +29,13 @@ router.get('/my-notifications', dc.getMyNotifications);
 
 // Order Tracking (User side)
 router.get('/track', dc.getOrderTrackingStatus);
-router.get('/otp-info', dc.getTodayDeliveryOTP);
 
-// Security: QR and OTP
+// Door QR + user confirmation
 router.post('/generate-daily-qr', dc.generateDailyDeliveries);
 router.post('/scan-qr', dc.scanQRCode);
-router.post('/verify-otp', dc.verifyDeliveryOTP);
+router.post('/:orderId/request-confirmation', dc.requestDeliveryConfirmation);
+router.post('/:orderId/confirm', dc.confirmDelivery);
+router.post('/:orderId/report-issue', dc.reportDeliveryIssue);
+router.get('/:orderId/history', dc.getDeliveryHistory);
 
 module.exports = router;

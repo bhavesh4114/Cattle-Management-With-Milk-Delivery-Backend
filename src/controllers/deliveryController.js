@@ -176,11 +176,8 @@ exports.assignDelivery = async (req, res) => {
                 deliveryBoyName: boy?.name });
         }
         await prisma.deliveryAssignment.updateMany({ where: { orderType, orderId: orderIdInt, isActive: true }, data: { isActive: false } });
-        const cryptoLib = require('crypto');
-        const deliveryOtp = Math.floor(1000 + Math.random() * 9000).toString();
-        const qrCode = cryptoLib.randomUUID();
         const assignment = await prisma.deliveryAssignment.create({
-            data: { orderType, orderId: orderIdInt, deliveryBoyId: boyId, assignedById: adminId, deliveryStatus: 'Assigned', notes: notes||null, isActive: true, deliveryOtp, qrCode, deliveryDate: todayMidnight() }
+            data: { orderType, orderId: orderIdInt, deliveryBoyId: boyId, assignedById: adminId, deliveryStatus: 'Assigned', notes: notes||null, isActive: true, deliveryDate: todayMidnight() }
         });
         if (orderType === 'trial') { await prisma.milkTrial.update({ where: { id: orderIdInt }, data: { deliveryBoyId: boyId, deliveryStatus: 'Assigned' } }); }
         else { await prisma.milkSubscription.update({ where: { id: orderIdInt }, data: { deliveryBoyId: boyId, deliveryStatus: 'Assigned' } }); }
@@ -224,14 +221,7 @@ exports.updateDeliveryStatus = async (req, res) => {
         const assignment = await prisma.deliveryAssignment.findFirst({ where: { id: parseInt(assignmentId), deliveryBoyId, isActive: true } });
         if (!assignment) return res.status(404).json({ message: 'Assignment not found' });
 
-        // Auto-generate OTP + QR when delivery boy Accepts the order (so user gets OTP immediately)
         let extraData = { deliveryStatus, notes: notes || assignment.notes };
-        if (deliveryStatus === 'Accepted' && !assignment.deliveryOtp) {
-            const crypto = require('crypto');
-            extraData.qrCode = crypto.randomUUID();
-            extraData.deliveryOtp = Math.floor(1000 + Math.random() * 9000).toString();
-            extraData.deliveryDate = todayMidnight();
-        }
 
         const updated = await prisma.deliveryAssignment.update({ where: { id: parseInt(assignmentId) }, data: extraData });
         if (assignment.orderType === 'trial') { await prisma.milkTrial.update({ where: { id: assignment.orderId }, data: { deliveryStatus } }); }
@@ -281,7 +271,7 @@ exports.getOrderTrackingStatus = async (req, res) => {
 
         // Build timeline steps
         const deliveryStatus = order.deliveryStatus || 'Pending';
-        const STATUS_ORDER = ['Pending', 'Assigned', 'Accepted', 'Out for Delivery', 'Delivered'];
+        const STATUS_ORDER = ['Pending', 'Assigned', 'Accepted', 'Out for Delivery', 'QR_SCANNED', 'AWAITING_USER_CONFIRMATION', 'PARTIALLY_DELIVERED', 'Delivered'];
         const currentIdx = STATUS_ORDER.indexOf(deliveryStatus);
 
         // For subscriptions, check payment
@@ -345,19 +335,6 @@ exports.getOrderTrackingStatus = async (req, res) => {
             }
         ];
 
-        // Auto-generate OTP for any active assignment that doesn't have one yet
-        if (assignment && !assignment.deliveryOtp) {
-            const cryptoLib = require('crypto');
-            const newOtp = Math.floor(1000 + Math.random() * 9000).toString();
-            const newQr = assignment.qrCode || cryptoLib.randomUUID();
-            await prisma.deliveryAssignment.update({
-                where: { id: assignment.id },
-                data: { deliveryOtp: newOtp, qrCode: newQr, deliveryDate: todayMidnight() }
-            });
-            assignment.deliveryOtp = newOtp;
-            assignment.qrCode = newQr;
-        }
-
         res.json({
             orderId: order.id,
             orderType,
@@ -369,8 +346,8 @@ exports.getOrderTrackingStatus = async (req, res) => {
             paymentStatus: orderType === 'sub' ? order.paymentStatus : null,
             deliveryStatus,
             deliveryBoyName: assignment?.deliveryBoy?.name || null,
-            deliveryOtp: assignment?.deliveryOtp || null,
             isQrScanned: assignment?.isQrScanned || false,
+            awaitingUserConfirmation: deliveryStatus === 'AWAITING_USER_CONFIRMATION',
             timeline
         });
     } catch (error) { res.status(500).json({ message: 'Server error', error: error.message }); }
@@ -379,153 +356,344 @@ exports.getOrderTrackingStatus = async (req, res) => {
 
 
 // ========================
-// Security: QR and OTP Flow
+// Security: Door QR + User Confirmation Flow
 // ========================
 
-const crypto = require('crypto');
+function normalizeOrderType(orderType) {
+    return orderType === 'subscription' ? 'sub' : orderType;
+}
+
+const ACTIVE_DELIVERY_STATUSES = ['Assigned', 'Accepted', 'Out for Delivery', 'QR_SCANNED', 'AWAITING_USER_CONFIRMATION', 'PARTIALLY_DELIVERED'];
+const TERMINAL_DELIVERY_STATUSES = ['Delivered', 'CANCELLED', 'Cancelled', 'Rejected'];
+
+async function getOrder(orderType, orderId) {
+    const normalized = normalizeOrderType(orderType);
+    return normalized === 'trial'
+        ? prisma.milkTrial.findUnique({ where: { id: parseInt(orderId) }, include: { product: true } })
+        : prisma.milkSubscription.findUnique({ where: { id: parseInt(orderId) }, include: { product: true } });
+}
+
+async function updateOrderDeliveryStatus(tx, orderType, orderId, deliveryStatus) {
+    const normalized = normalizeOrderType(orderType);
+    if (normalized === 'trial') {
+        return tx.milkTrial.update({ where: { id: parseInt(orderId) }, data: { deliveryStatus } });
+    }
+    return tx.milkSubscription.update({ where: { id: parseInt(orderId) }, data: { deliveryStatus } });
+}
+
+function buildOrderItem(assignment, order) {
+    const unit = order?.product?.unit || (order?.milkType?.toLowerCase().includes('milk') ? 'L' : 'Qty');
+    return {
+        assignmentId: assignment.id,
+        orderId: assignment.orderId,
+        orderType: assignment.orderType,
+        label: order?.product?.name || order?.milkType || `Order #${assignment.orderId}`,
+        quantity: order?.dailyQuantity,
+        unit,
+    };
+}
+
+async function findCustomerActiveAssignments(userId, deliveryBoyId) {
+    const assignments = await prisma.deliveryAssignment.findMany({
+        where: {
+            deliveryBoyId,
+            isActive: true,
+            deliveryStatus: { in: ACTIVE_DELIVERY_STATUSES },
+        },
+        include: { deliveryBoy: { select: { id: true, name: true, email: true } } },
+        orderBy: { createdAt: 'desc' },
+    });
+
+    const matched = [];
+    for (const assignment of assignments) {
+        const order = await getOrder(assignment.orderType, assignment.orderId);
+        if (!order || order.userId !== userId) continue;
+        if (TERMINAL_DELIVERY_STATUSES.includes(order.deliveryStatus) || TERMINAL_DELIVERY_STATUSES.includes(order.status)) continue;
+        matched.push({ assignment, order });
+    }
+    return matched;
+}
 
 exports.generateDailyDeliveries = async (req, res) => {
     try {
-        const adminId = req.admin.id;
-        const today = todayMidnight();
-        
-        // Find all active assignments for today that don't have QR yet
-        const assignments = await prisma.deliveryAssignment.findMany({
-            where: { isActive: true, qrCode: null }
-        });
-        
-        let generatedCount = 0;
-        for (const assignment of assignments) {
-            const qrCode = crypto.randomUUID();
-            const deliveryOtp = Math.floor(1000 + Math.random() * 9000).toString(); // 4-digit OTP
-            
-            await prisma.deliveryAssignment.update({
-                where: { id: assignment.id },
-                data: { qrCode, deliveryOtp, deliveryDate: today }
-            });
-            generatedCount++;
-        }
-        
-        res.json({ message: `Generated QR codes for ${generatedCount} deliveries`, count: generatedCount });
+        res.json({ message: 'Daily delivery codes are no longer required. Use permanent customer door QR codes.' });
     } catch (error) { res.status(500).json({ message: 'Server error', error: error.message }); }
 };
 
 exports.scanQRCode = async (req, res) => {
     try {
-        const { qrCode } = req.body;
+        const { qrToken, qrCode } = req.body;
+        const token = qrToken || qrCode;
         const deliveryBoyId = req.admin.id;
-        
-        const assignment = await prisma.deliveryAssignment.findUnique({
-            where: { qrCode }
-        });
-        
-        if (!assignment) {
-            return res.status(404).json({ message: 'Invalid or expired QR code.' });
-        }
-        
-        if (assignment.deliveryBoyId !== deliveryBoyId) {
-            return res.status(403).json({ message: 'This delivery is assigned to another delivery boy.' });
-        }
-        
-        if (assignment.deliveryStatus === 'Delivered' || assignment.isOtpVerified) {
-            return res.status(400).json({ message: 'This order has already been delivered.' });
-        }
-        
-        // Mark QR as scanned
-        await prisma.deliveryAssignment.update({
-            where: { id: assignment.id },
-            data: { isQrScanned: true, deliveryStatus: 'Reached Customer' }
-        });
-        
-        // Fetch order details to show to delivery boy
-        let order = assignment.orderType === 'trial'
-            ? await prisma.milkTrial.findUnique({ where: { id: assignment.orderId }, include: { product: true } })
-            : await prisma.milkSubscription.findUnique({ where: { id: assignment.orderId }, include: { product: true } });
-            
-        res.json({ message: 'QR Code verified successfully.', assignment, order });
-    } catch (error) { res.status(500).json({ message: 'Server error', error: error.message }); }
-};
 
-exports.verifyDeliveryOTP = async (req, res) => {
-    try {
-        const { assignmentId, otp } = req.body;
-        const deliveryBoyId = req.admin.id;
-        
-        const ids = Array.isArray(assignmentId) ? assignmentId : [assignmentId];
-        
-        const assignments = await prisma.deliveryAssignment.findMany({
-            where: { id: { in: ids.map(id => parseInt(id)) }, deliveryBoyId, isActive: true }
+        if (!token) return res.status(400).json({ message: 'QR token is required.' });
+
+        const user = await prisma.admin.findUnique({
+            where: { doorQrToken: token },
+            select: { id: true, name: true, email: true, doorQrToken: true, isQrEnabled: true },
         });
-        
-        if (assignments.length === 0) {
-            return res.status(404).json({ message: 'Assignments not found.' });
+
+        if (!user) return res.status(404).json({ message: 'Invalid QR code.' });
+        if (!user.isQrEnabled) return res.status(400).json({ message: 'This QR code is disabled.' });
+
+        const matches = await findCustomerActiveAssignments(user.id, deliveryBoyId);
+        if (matches.length === 0) {
+            return res.status(404).json({ message: 'No active order assigned to you for this customer.' });
         }
-        
-        // If the OTP matches ANY of the assignments in the group, we accept it for ALL of them.
-        const cleanOtp = String(otp).trim();
-        const isValid = assignments.some(a => a.deliveryOtp && String(a.deliveryOtp).trim() === cleanOtp);
-        if (!isValid) {
-            return res.status(400).json({ message: 'Invalid OTP. Please try again.' });
-        }
-        
-        // Mark all as verified and delivered
-        await prisma.deliveryAssignment.updateMany({
-            where: { id: { in: assignments.map(a => a.id) } },
-            data: { isOtpVerified: true, deliveryStatus: 'Delivered' }
-        });
-        
-        // Update main order status
-        for (const assignment of assignments) {
-            if (assignment.orderType === 'trial') {
-                await prisma.milkTrial.update({ where: { id: assignment.orderId }, data: { deliveryStatus: 'Delivered' } });
-            } else {
-                await prisma.milkSubscription.update({ where: { id: assignment.orderId }, data: { deliveryStatus: 'Delivered' } });
+
+        const now = new Date();
+        await prisma.$transaction(async (tx) => {
+            for (const { assignment } of matches) {
+                await tx.deliveryAssignment.update({
+                    where: { id: assignment.id },
+                    data: { isQrScanned: true, qrScannedAt: assignment.qrScannedAt || now, deliveryStatus: 'QR_SCANNED' },
+                });
+                await updateOrderDeliveryStatus(tx, assignment.orderType, assignment.orderId, 'QR_SCANNED');
+                await tx.deliveryHistory.create({
+                    data: {
+                        orderType: assignment.orderType,
+                        orderId: assignment.orderId,
+                        userId: user.id,
+                        deliveryBoyId,
+                        qrToken: token,
+                        qrScannedAt: now,
+                        status: 'QR_SCANNED',
+                        action: 'QR_SCANNED',
+                        metadata: { assignmentId: assignment.id },
+                    },
+                });
             }
-        }
-        
-        res.json({ message: 'OTP verified! Deliveries marked as complete.', assignments });
+        });
+
+        res.json({
+            message: 'QR verified. Select the items being delivered.',
+            customer: { id: user.id, name: user.name, email: user.email },
+            deliveryBoyId,
+            orders: matches.map(({ assignment, order }) => ({
+                assignmentId: assignment.id,
+                orderId: assignment.orderId,
+                orderType: assignment.orderType,
+                deliveryStatus: 'QR_SCANNED',
+                customerName: order.customerName,
+                address: order.address,
+                item: buildOrderItem(assignment, order),
+            })),
+        });
     } catch (error) { res.status(500).json({ message: 'Server error', error: error.message }); }
 };
 
-exports.getTodayDeliveryOTP = async (req, res) => {
+exports.requestDeliveryConfirmation = async (req, res) => {
     try {
-        let { orderType, orderId } = req.query;
-        if (orderType === 'subscription') orderType = 'sub';
-        const orderIdInt = parseInt(orderId);
-        
-        // Try active assignment first, then fall back to any recent assignment
-        let assignment = await prisma.deliveryAssignment.findFirst({
-            where: { orderType, orderId: orderIdInt, isActive: true },
-            orderBy: { createdAt: 'desc' }
+        const { itemIds } = req.body;
+        const orderId = parseInt(req.params.orderId, 10);
+        const orderType = normalizeOrderType(req.body.orderType || req.query.orderType || 'sub');
+        const deliveryBoyId = req.admin.id;
+
+        const assignment = await prisma.deliveryAssignment.findFirst({
+            where: { orderType, orderId, deliveryBoyId, isActive: true },
+            include: { deliveryBoy: { select: { id: true, name: true, email: true } } },
         });
-        
-        // Fallback: find most recent assignment even if not active
-        if (!assignment) {
-            assignment = await prisma.deliveryAssignment.findFirst({
-                where: { orderType, orderId: orderIdInt },
-                orderBy: { createdAt: 'desc' }
-            });
+
+        if (!assignment) return res.status(404).json({ message: 'Assignment not found.' });
+        if (!assignment.isQrScanned) return res.status(400).json({ message: 'Scan the customer door QR before requesting confirmation.' });
+        if (TERMINAL_DELIVERY_STATUSES.includes(assignment.deliveryStatus)) return res.status(400).json({ message: 'This delivery is already closed.' });
+
+        const order = await getOrder(orderType, orderId);
+        if (!order) return res.status(404).json({ message: 'Order not found.' });
+        if (!order.userId) return res.status(400).json({ message: 'Order is not linked to a user account.' });
+
+        const validItemIds = Array.isArray(itemIds) ? itemIds.map(id => parseInt(id, 10)).filter(Boolean) : [];
+        if (!validItemIds.includes(assignment.id)) {
+            return res.status(400).json({ message: 'Selected items do not belong to this order.' });
         }
-        
-        if (!assignment) {
-            // Return 200 with null OTP to avoid 404 red errors in network tab
-            return res.json({ otp: null, qrScanned: false, delivered: false });
-        }
-        
-        // Auto-generate OTP if missing
-        if (!assignment.deliveryOtp) {
-            const cryptoLib = require('crypto');
-            const newOtp = Math.floor(1000 + Math.random() * 9000).toString();
-            const newQr = assignment.qrCode || cryptoLib.randomUUID();
-            await prisma.deliveryAssignment.update({
+
+        const selectedItems = [buildOrderItem(assignment, order)];
+        await prisma.$transaction(async (tx) => {
+            await tx.deliveryAssignment.update({
                 where: { id: assignment.id },
-                data: { deliveryOtp: newOtp, qrCode: newQr, deliveryDate: todayMidnight() }
+                data: { selectedItems, deliveryStatus: 'AWAITING_USER_CONFIRMATION' },
             });
-            assignment.deliveryOtp = newOtp;
-            console.log(`[OTP] Auto-generated OTP ${newOtp} for assignment #${assignment.id} (${orderType} #${orderIdInt})`);
-        }
-        
-        res.json({ otp: assignment.deliveryOtp, qrScanned: assignment.isQrScanned, delivered: assignment.isOtpVerified });
+            await updateOrderDeliveryStatus(tx, orderType, orderId, 'AWAITING_USER_CONFIRMATION');
+            await tx.userAlert.create({
+                data: {
+                    userId: order.userId,
+                    type: 'DELIVERY_CONFIRMATION',
+                    orderType,
+                    orderId,
+                    message: `Delivery boy ${assignment.deliveryBoy?.name || ''} has arrived. Please confirm delivery for ${selectedItems.map(i => i.label).join(', ')}.`,
+                    metadata: { deliveryBoyId, deliveryBoyName: assignment.deliveryBoy?.name, selectedItems },
+                },
+            });
+            await tx.deliveryHistory.create({
+                data: {
+                    orderType,
+                    orderId,
+                    userId: order.userId,
+                    deliveryBoyId,
+                    qrScannedAt: assignment.qrScannedAt,
+                    itemsSelected: selectedItems,
+                    status: 'AWAITING_USER_CONFIRMATION',
+                    action: 'REQUESTED_USER_CONFIRMATION',
+                    metadata: { assignmentId: assignment.id },
+                },
+            });
+        });
+
+        res.json({ message: 'User confirmation requested.', status: 'AWAITING_USER_CONFIRMATION', selectedItems });
+    } catch (error) { res.status(500).json({ message: 'Server error', error: error.message }); }
+};
+
+exports.confirmDelivery = async (req, res) => {
+    try {
+        const orderId = parseInt(req.params.orderId, 10);
+        const orderType = normalizeOrderType(req.body.orderType || req.query.orderType || 'sub');
+        const userId = req.admin.id;
+        const now = new Date();
+
+        const result = await prisma.$transaction(async (tx) => {
+            const order = orderType === 'trial'
+                ? await tx.milkTrial.findUnique({ where: { id: orderId } })
+                : await tx.milkSubscription.findUnique({ where: { id: orderId } });
+            if (!order) throw Object.assign(new Error('Order not found.'), { status: 404 });
+            if (order.userId !== userId) throw Object.assign(new Error('You cannot confirm this delivery.'), { status: 403 });
+
+            const assignment = await tx.deliveryAssignment.findFirst({
+                where: { orderType, orderId, isActive: true, deliveryStatus: 'AWAITING_USER_CONFIRMATION' },
+                include: { deliveryBoy: { select: { id: true, name: true } } },
+            });
+            if (!assignment) throw Object.assign(new Error('No delivery is awaiting your confirmation.'), { status: 400 });
+            if (!assignment.isQrScanned) throw Object.assign(new Error('Delivery QR was not scanned.'), { status: 400 });
+
+            const updatedAssignment = await tx.deliveryAssignment.update({
+                where: { id: assignment.id },
+                data: {
+                    deliveryStatus: 'Delivered',
+                    isOtpVerified: false,
+                    userConfirmedAt: now,
+                    deliveredAt: now,
+                    isActive: false,
+                },
+            });
+            await updateOrderDeliveryStatus(tx, orderType, orderId, 'Delivered');
+
+            await tx.deliveryHistory.create({
+                data: {
+                    orderType,
+                    orderId,
+                    userId,
+                    deliveryBoyId: assignment.deliveryBoyId,
+                    qrScannedAt: assignment.qrScannedAt,
+                    itemsSelected: assignment.selectedItems,
+                    userConfirmationAt: now,
+                    deliveredAt: now,
+                    status: 'Delivered',
+                    action: 'USER_CONFIRMED_DELIVERY',
+                    metadata: { assignmentId: assignment.id, deliveryBoyName: assignment.deliveryBoy?.name },
+                },
+            });
+
+            const adminId = order.adminId;
+            await tx.userAlert.createMany({
+                data: [
+                    {
+                        userId,
+                        type: 'DELIVERY_COMPLETED',
+                        orderType,
+                        orderId,
+                        message: 'Your delivery has been successfully completed.',
+                        metadata: { deliveredAt: now },
+                    },
+                    {
+                        userId: assignment.deliveryBoyId,
+                        type: 'DELIVERY_CONFIRMED_BY_USER',
+                        orderType,
+                        orderId,
+                        message: `Delivery confirmed by ${order.customerName}.`,
+                        metadata: { deliveredAt: now },
+                    },
+                    {
+                        userId: adminId,
+                        type: 'DELIVERY_COMPLETED_ADMIN',
+                        orderType,
+                        orderId,
+                        message: `Order #${orderId} has been successfully delivered by ${assignment.deliveryBoy?.name || 'delivery boy'}.`,
+                        metadata: { customerName: order.customerName, deliveryBoyId: assignment.deliveryBoyId, deliveredAt: now },
+                    },
+                ],
+            });
+
+            await tx.userAlert.updateMany({
+                where: { userId, type: 'DELIVERY_CONFIRMATION', orderType, orderId, isRead: false },
+                data: { isRead: true },
+            });
+
+            return updatedAssignment;
+        });
+
+        res.json({ message: 'Delivery confirmed.', assignment: result });
+    } catch (error) {
+        res.status(error.status || 500).json({ message: error.message || 'Server error' });
+    }
+};
+
+exports.reportDeliveryIssue = async (req, res) => {
+    try {
+        const orderId = parseInt(req.params.orderId, 10);
+        const orderType = normalizeOrderType(req.body.orderType || req.query.orderType || 'sub');
+        const userId = req.admin.id;
+        const issue = req.body.issue || 'Customer reported an issue with delivery.';
+
+        const order = await getOrder(orderType, orderId);
+        if (!order) return res.status(404).json({ message: 'Order not found.' });
+        if (order.userId !== userId) return res.status(403).json({ message: 'You cannot report this delivery.' });
+
+        const assignment = await prisma.deliveryAssignment.findFirst({ where: { orderType, orderId, isActive: true } });
+        if (!assignment) return res.status(404).json({ message: 'Active delivery not found.' });
+
+        await prisma.$transaction(async (tx) => {
+            await tx.deliveryAssignment.update({
+                where: { id: assignment.id },
+                data: { deliveryStatus: 'PARTIALLY_DELIVERED', confirmationIssue: issue },
+            });
+            await updateOrderDeliveryStatus(tx, orderType, orderId, 'PARTIALLY_DELIVERED');
+            await tx.deliveryHistory.create({
+                data: {
+                    orderType,
+                    orderId,
+                    userId,
+                    deliveryBoyId: assignment.deliveryBoyId,
+                    qrScannedAt: assignment.qrScannedAt,
+                    itemsSelected: assignment.selectedItems,
+                    status: 'PARTIALLY_DELIVERED',
+                    action: 'USER_REPORTED_ISSUE',
+                    metadata: { issue },
+                },
+            });
+            await tx.userAlert.create({
+                data: {
+                    userId: order.adminId,
+                    type: 'DELIVERY_ISSUE',
+                    orderType,
+                    orderId,
+                    message: `Customer reported a delivery issue for order #${orderId}: ${issue}`,
+                    metadata: { userId, deliveryBoyId: assignment.deliveryBoyId },
+                },
+            });
+        });
+
+        res.json({ message: 'Issue reported. Admin has been notified.' });
+    } catch (error) { res.status(500).json({ message: 'Server error', error: error.message }); }
+};
+
+exports.getDeliveryHistory = async (req, res) => {
+    try {
+        const orderId = parseInt(req.params.orderId, 10);
+        const orderType = normalizeOrderType(req.query.orderType || req.body?.orderType || 'sub');
+        const history = await prisma.deliveryHistory.findMany({
+            where: { orderId, orderType },
+            orderBy: { createdAt: 'desc' },
+        });
+        res.json(history);
     } catch (error) { res.status(500).json({ message: 'Server error', error: error.message }); }
 };
 
