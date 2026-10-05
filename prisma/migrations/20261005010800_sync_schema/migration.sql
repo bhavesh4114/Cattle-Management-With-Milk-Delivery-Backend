@@ -1,114 +1,123 @@
 -- AlterEnum
-ALTER TYPE "Role" ADD VALUE 'CUSTOM';
+DO $$
+BEGIN
+  ALTER TYPE "Role" ADD VALUE IF NOT EXISTS 'CUSTOM';
+EXCEPTION
+  WHEN duplicate_object THEN null;
+END $$;
 
--- DropIndex
-DROP INDEX "Cow_tagNo_key";
-
--- AlterTable
-ALTER TABLE "Admin" ADD COLUMN     "customRoleId" INTEGER,
-ADD COLUMN     "status" TEXT NOT NULL DEFAULT 'Active';
-
--- AlterTable
-ALTER TABLE "Cow" ADD COLUMN     "adminId" INTEGER,
-ADD COLUMN     "image" TEXT,
-ADD COLUMN     "image2" TEXT;
+-- DropIndex (Non-destructive: replacing global unique constraint with multi-tenant compound unique index)
+DROP INDEX IF EXISTS "Cow_tagNo_key";
 
 -- AlterTable
-ALTER TABLE "CowDeath" ADD COLUMN     "adminId" INTEGER,
-ADD COLUMN     "disposalCost" DOUBLE PRECISION,
-ADD COLUMN     "disposalDate" TIMESTAMP(3),
-ADD COLUMN     "disposalMethod" TEXT,
-ADD COLUMN     "notes" TEXT;
+ALTER TABLE "Admin" ADD COLUMN IF NOT EXISTS "customRoleId" INTEGER,
+ADD COLUMN IF NOT EXISTS "status" TEXT NOT NULL DEFAULT 'Active';
 
 -- AlterTable
-ALTER TABLE "CowFoodRecord" ADD COLUMN     "adminId" INTEGER;
+ALTER TABLE "Cow" ADD COLUMN IF NOT EXISTS "adminId" INTEGER,
+ADD COLUMN IF NOT EXISTS "image" TEXT,
+ADD COLUMN IF NOT EXISTS "image2" TEXT;
 
 -- AlterTable
-ALTER TABLE "CowSale" ADD COLUMN     "adminId" INTEGER,
-ADD COLUMN     "amountReceived" DOUBLE PRECISION NOT NULL DEFAULT 0,
-ADD COLUMN     "buyerAddress" TEXT,
-ADD COLUMN     "buyerCity" TEXT,
-ADD COLUMN     "buyerPhone" TEXT,
-ADD COLUMN     "buyerPincode" TEXT,
-ADD COLUMN     "buyerState" TEXT,
-ADD COLUMN     "lastFeedIntake" DOUBLE PRECISION,
-ADD COLUMN     "lastMilkProd" DOUBLE PRECISION,
-ADD COLUMN     "otherReason" TEXT,
-ADD COLUMN     "paymentMethod" TEXT NOT NULL DEFAULT 'Cash',
-ADD COLUMN     "paymentStatus" TEXT NOT NULL DEFAULT 'Paid',
-ADD COLUMN     "reason" TEXT NOT NULL DEFAULT 'Other',
-ADD COLUMN     "remark" TEXT;
+ALTER TABLE "CowDeath" ADD COLUMN IF NOT EXISTS "adminId" INTEGER,
+ADD COLUMN IF NOT EXISTS "disposalCost" DOUBLE PRECISION,
+ADD COLUMN IF NOT EXISTS "disposalDate" TIMESTAMP(3),
+ADD COLUMN IF NOT EXISTS "disposalMethod" TEXT,
+ADD COLUMN IF NOT EXISTS "notes" TEXT;
 
 -- AlterTable
-ALTER TABLE "FoodIntake" ADD COLUMN     "adminId" INTEGER,
-ADD COLUMN     "afternoonIntake" DOUBLE PRECISION DEFAULT 0,
-ADD COLUMN     "cowId" INTEGER,
-ADD COLUMN     "eveningIntake" DOUBLE PRECISION DEFAULT 0,
-ADD COLUMN     "foodItem" TEXT,
-ADD COLUMN     "morningIntake" DOUBLE PRECISION DEFAULT 0,
-ADD COLUMN     "totalIntake" DOUBLE PRECISION NOT NULL DEFAULT 0,
-ALTER COLUMN "quantityKg" DROP NOT NULL;
+ALTER TABLE "CowFoodRecord" ADD COLUMN IF NOT EXISTS "adminId" INTEGER;
 
 -- AlterTable
-ALTER TABLE "FoodPurchase" ADD COLUMN     "adminId" INTEGER;
+ALTER TABLE "CowSale" ADD COLUMN IF NOT EXISTS "adminId" INTEGER,
+ADD COLUMN IF NOT EXISTS "amountReceived" DOUBLE PRECISION NOT NULL DEFAULT 0,
+ADD COLUMN IF NOT EXISTS "buyerAddress" TEXT,
+ADD COLUMN IF NOT EXISTS "buyerCity" TEXT,
+ADD COLUMN IF NOT EXISTS "buyerPhone" TEXT,
+ADD COLUMN IF NOT EXISTS "buyerPincode" TEXT,
+ADD COLUMN IF NOT EXISTS "buyerState" TEXT,
+ADD COLUMN IF NOT EXISTS "lastFeedIntake" DOUBLE PRECISION,
+ADD COLUMN IF NOT EXISTS "lastMilkProd" DOUBLE PRECISION,
+ADD COLUMN IF NOT EXISTS "otherReason" TEXT,
+ADD COLUMN IF NOT EXISTS "paymentMethod" TEXT NOT NULL DEFAULT 'Cash',
+ADD COLUMN IF NOT EXISTS "paymentStatus" TEXT NOT NULL DEFAULT 'Paid',
+ADD COLUMN IF NOT EXISTS "reason" TEXT NOT NULL DEFAULT 'Other',
+ADD COLUMN IF NOT EXISTS "remark" TEXT;
 
 -- AlterTable
-ALTER TABLE "Item" DROP COLUMN "category",
-DROP COLUMN "quantity",
-ADD COLUMN     "adminId" INTEGER,
-ADD COLUMN     "currentStock" DOUBLE PRECISION NOT NULL DEFAULT 0,
-ADD COLUMN     "minimumLevel" DOUBLE PRECISION,
-ADD COLUMN     "price" DOUBLE PRECISION,
-ADD COLUMN     "remarks" TEXT;
+ALTER TABLE "FoodIntake" ADD COLUMN IF NOT EXISTS "adminId" INTEGER,
+ADD COLUMN IF NOT EXISTS "afternoonIntake" DOUBLE PRECISION DEFAULT 0,
+ADD COLUMN IF NOT EXISTS "cowId" INTEGER,
+ADD COLUMN IF NOT EXISTS "eveningIntake" DOUBLE PRECISION DEFAULT 0,
+ADD COLUMN IF NOT EXISTS "foodItem" TEXT,
+ADD COLUMN IF NOT EXISTS "morningIntake" DOUBLE PRECISION DEFAULT 0,
+ADD COLUMN IF NOT EXISTS "totalIntake" DOUBLE PRECISION NOT NULL DEFAULT 0;
+ALTER TABLE "FoodIntake" ALTER COLUMN "quantityKg" DROP NOT NULL;
 
 -- AlterTable
-ALTER TABLE "MilkRecord" DROP COLUMN "liters",
-DROP COLUMN "milkedAt",
-DROP COLUMN "shift",
-ADD COLUMN     "adminId" INTEGER,
-ADD COLUMN     "eveningMilk" DOUBLE PRECISION,
-ADD COLUMN     "morningMilk" DOUBLE PRECISION,
-ADD COLUMN     "recordDate" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
-ADD COLUMN     "totalMilk" DOUBLE PRECISION NOT NULL DEFAULT 0;
+ALTER TABLE "FoodPurchase" ADD COLUMN IF NOT EXISTS "adminId" INTEGER;
+
+-- AlterTable (Item) - SAFE & NON-DESTRUCTIVE: Legacy columns category and quantity are preserved
+ALTER TABLE "Item" ALTER COLUMN "category" DROP NOT NULL;
+ALTER TABLE "Item" ALTER COLUMN "quantity" DROP NOT NULL;
+ALTER TABLE "Item" ADD COLUMN IF NOT EXISTS "adminId" INTEGER;
+ALTER TABLE "Item" ADD COLUMN IF NOT EXISTS "currentStock" DOUBLE PRECISION NOT NULL DEFAULT 0;
+ALTER TABLE "Item" ADD COLUMN IF NOT EXISTS "minimumLevel" DOUBLE PRECISION;
+ALTER TABLE "Item" ADD COLUMN IF NOT EXISTS "price" DOUBLE PRECISION;
+ALTER TABLE "Item" ADD COLUMN IF NOT EXISTS "remarks" TEXT;
+
+-- AlterTable (MilkRecord) - SAFE & NON-DESTRUCTIVE: Legacy columns liters, milkedAt, shift are preserved
+ALTER TABLE "MilkRecord" ALTER COLUMN "liters" DROP NOT NULL;
+ALTER TABLE "MilkRecord" ALTER COLUMN "milkedAt" DROP NOT NULL;
+ALTER TABLE "MilkRecord" ALTER COLUMN "shift" DROP NOT NULL;
+ALTER TABLE "MilkRecord" ADD COLUMN IF NOT EXISTS "adminId" INTEGER;
+ALTER TABLE "MilkRecord" ADD COLUMN IF NOT EXISTS "eveningMilk" DOUBLE PRECISION;
+ALTER TABLE "MilkRecord" ADD COLUMN IF NOT EXISTS "morningMilk" DOUBLE PRECISION;
+ALTER TABLE "MilkRecord" ADD COLUMN IF NOT EXISTS "recordDate" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP;
+ALTER TABLE "MilkRecord" ADD COLUMN IF NOT EXISTS "totalMilk" DOUBLE PRECISION NOT NULL DEFAULT 0;
+
+-- AlterTable (Order) - SAFE & NON-DESTRUCTIVE: Legacy customer order columns amount, customer, itemName, orderedAt, quantity, status are preserved
+ALTER TABLE "Order" ALTER COLUMN "amount" DROP NOT NULL;
+ALTER TABLE "Order" ALTER COLUMN "customer" DROP NOT NULL;
+ALTER TABLE "Order" ALTER COLUMN "itemName" DROP NOT NULL;
+ALTER TABLE "Order" ALTER COLUMN "quantity" DROP NOT NULL;
+ALTER TABLE "Order" ADD COLUMN IF NOT EXISTS "adminId" INTEGER;
+ALTER TABLE "Order" ADD COLUMN IF NOT EXISTS "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP;
+ALTER TABLE "Order" ADD COLUMN IF NOT EXISTS "location" TEXT;
+ALTER TABLE "Order" ADD COLUMN IF NOT EXISTS "orderNumber" TEXT;
+ALTER TABLE "Order" ADD COLUMN IF NOT EXISTS "paymentStatus" TEXT NOT NULL DEFAULT 'Pending';
+ALTER TABLE "Order" ADD COLUMN IF NOT EXISTS "purchaseDate" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP;
+ALTER TABLE "Order" ADD COLUMN IF NOT EXISTS "remarks" TEXT;
+ALTER TABLE "Order" ADD COLUMN IF NOT EXISTS "totalAmount" DOUBLE PRECISION NOT NULL DEFAULT 0;
+ALTER TABLE "Order" ADD COLUMN IF NOT EXISTS "vendorName" TEXT DEFAULT 'General Vendor';
+
+-- Populate unique orderNumber and default vendorName for existing legacy rows if any, then enforce NOT NULL
+UPDATE "Order" SET "orderNumber" = CONCAT('ORD-LEGACY-', "id"::text) WHERE "orderNumber" IS NULL;
+UPDATE "Order" SET "vendorName" = 'General Vendor' WHERE "vendorName" IS NULL;
+ALTER TABLE "Order" ALTER COLUMN "orderNumber" SET NOT NULL;
+ALTER TABLE "Order" ALTER COLUMN "vendorName" SET NOT NULL;
 
 -- AlterTable
-ALTER TABLE "Order" DROP COLUMN "amount",
-DROP COLUMN "customer",
-DROP COLUMN "itemName",
-DROP COLUMN "orderedAt",
-DROP COLUMN "quantity",
-DROP COLUMN "status",
-ADD COLUMN     "adminId" INTEGER,
-ADD COLUMN     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
-ADD COLUMN     "location" TEXT,
-ADD COLUMN     "orderNumber" TEXT NOT NULL,
-ADD COLUMN     "paymentStatus" TEXT NOT NULL DEFAULT 'Pending',
-ADD COLUMN     "purchaseDate" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
-ADD COLUMN     "remarks" TEXT,
-ADD COLUMN     "totalAmount" DOUBLE PRECISION NOT NULL DEFAULT 0,
-ADD COLUMN     "vendorName" TEXT NOT NULL;
+ALTER TABLE "ReproductionRecord" ADD COLUMN IF NOT EXISTS "adminId" INTEGER,
+ADD COLUMN IF NOT EXISTS "aiType" TEXT,
+ADD COLUMN IF NOT EXISTS "breedingStatus" TEXT,
+ADD COLUMN IF NOT EXISTS "expectedNextHeatDate" TIMESTAMP(3),
+ADD COLUMN IF NOT EXISTS "lastBreedingDate" TIMESTAMP(3),
+ADD COLUMN IF NOT EXISTS "pregnancyMonth" TEXT,
+ADD COLUMN IF NOT EXISTS "serviceCount" INTEGER,
+ADD COLUMN IF NOT EXISTS "veterinaryRemarks" TEXT;
 
 -- AlterTable
-ALTER TABLE "ReproductionRecord" ADD COLUMN     "adminId" INTEGER,
-ADD COLUMN     "aiType" TEXT,
-ADD COLUMN     "breedingStatus" TEXT,
-ADD COLUMN     "expectedNextHeatDate" TIMESTAMP(3),
-ADD COLUMN     "lastBreedingDate" TIMESTAMP(3),
-ADD COLUMN     "pregnancyMonth" TEXT,
-ADD COLUMN     "serviceCount" INTEGER,
-ADD COLUMN     "veterinaryRemarks" TEXT;
-
--- AlterTable
-ALTER TABLE "Treatment" ADD COLUMN     "adminId" INTEGER,
-ADD COLUMN     "currentMilk" DOUBLE PRECISION,
-ADD COLUMN     "doctorName" TEXT,
-ADD COLUMN     "dropPercentage" DOUBLE PRECISION,
-ADD COLUMN     "milkDropSource" BOOLEAN NOT NULL DEFAULT false,
-ADD COLUMN     "previousMilk" DOUBLE PRECISION,
-ADD COLUMN     "remarks" TEXT;
+ALTER TABLE "Treatment" ADD COLUMN IF NOT EXISTS "adminId" INTEGER,
+ADD COLUMN IF NOT EXISTS "currentMilk" DOUBLE PRECISION,
+ADD COLUMN IF NOT EXISTS "doctorName" TEXT,
+ADD COLUMN IF NOT EXISTS "dropPercentage" DOUBLE PRECISION,
+ADD COLUMN IF NOT EXISTS "milkDropSource" BOOLEAN NOT NULL DEFAULT false,
+ADD COLUMN IF NOT EXISTS "previousMilk" DOUBLE PRECISION,
+ADD COLUMN IF NOT EXISTS "remarks" TEXT;
 
 -- CreateTable
-CREATE TABLE "CustomRole" (
+CREATE TABLE IF NOT EXISTS "CustomRole" (
     "id" SERIAL NOT NULL,
     "name" TEXT NOT NULL,
     "status" TEXT NOT NULL DEFAULT 'Active',
@@ -120,7 +129,7 @@ CREATE TABLE "CustomRole" (
 );
 
 -- CreateTable
-CREATE TABLE "ConversionRule" (
+CREATE TABLE IF NOT EXISTS "ConversionRule" (
     "id" SERIAL NOT NULL,
     "inputMaterial" TEXT NOT NULL DEFAULT 'Milk',
     "inputQty" DOUBLE PRECISION NOT NULL,
@@ -136,7 +145,7 @@ CREATE TABLE "ConversionRule" (
 );
 
 -- CreateTable
-CREATE TABLE "StockAdjustment" (
+CREATE TABLE IF NOT EXISTS "StockAdjustment" (
     "id" SERIAL NOT NULL,
     "itemId" INTEGER NOT NULL,
     "type" TEXT NOT NULL,
@@ -153,7 +162,7 @@ CREATE TABLE "StockAdjustment" (
 );
 
 -- CreateTable
-CREATE TABLE "OrderItem" (
+CREATE TABLE IF NOT EXISTS "OrderItem" (
     "id" SERIAL NOT NULL,
     "orderId" INTEGER NOT NULL,
     "itemName" TEXT NOT NULL,
@@ -165,7 +174,7 @@ CREATE TABLE "OrderItem" (
 );
 
 -- CreateTable
-CREATE TABLE "AnimalFeedingPlan" (
+CREATE TABLE IF NOT EXISTS "AnimalFeedingPlan" (
     "id" SERIAL NOT NULL,
     "cowId" INTEGER NOT NULL,
     "planName" TEXT NOT NULL,
@@ -192,7 +201,7 @@ CREATE TABLE "AnimalFeedingPlan" (
 );
 
 -- CreateTable
-CREATE TABLE "MilkAllocation" (
+CREATE TABLE IF NOT EXISTS "MilkAllocation" (
     "id" SERIAL NOT NULL,
     "adminId" INTEGER NOT NULL,
     "staffId" INTEGER NOT NULL,
@@ -205,7 +214,7 @@ CREATE TABLE "MilkAllocation" (
 );
 
 -- CreateTable
-CREATE TABLE "StaffMilkReport" (
+CREATE TABLE IF NOT EXISTS "StaffMilkReport" (
     "id" SERIAL NOT NULL,
     "staffId" INTEGER NOT NULL,
     "reportDate" TIMESTAMP(3) NOT NULL,
@@ -221,7 +230,7 @@ CREATE TABLE "StaffMilkReport" (
 );
 
 -- CreateTable
-CREATE TABLE "CustomerMilkOrder" (
+CREATE TABLE IF NOT EXISTS "CustomerMilkOrder" (
     "id" SERIAL NOT NULL,
     "userId" INTEGER,
     "adminId" INTEGER,
@@ -244,7 +253,7 @@ CREATE TABLE "CustomerMilkOrder" (
 );
 
 -- CreateTable
-CREATE TABLE "OrderHistoryLine" (
+CREATE TABLE IF NOT EXISTS "OrderHistoryLine" (
     "id" SERIAL NOT NULL,
     "orderId" INTEGER NOT NULL,
     "status" TEXT NOT NULL,
@@ -257,7 +266,7 @@ CREATE TABLE "OrderHistoryLine" (
 );
 
 -- CreateTable
-CREATE TABLE "Product" (
+CREATE TABLE IF NOT EXISTS "Product" (
     "id" SERIAL NOT NULL,
     "adminId" INTEGER NOT NULL,
     "name" TEXT NOT NULL,
@@ -273,7 +282,7 @@ CREATE TABLE "Product" (
 );
 
 -- CreateTable
-CREATE TABLE "MilkTrial" (
+CREATE TABLE IF NOT EXISTS "MilkTrial" (
     "id" SERIAL NOT NULL,
     "userId" INTEGER,
     "adminId" INTEGER NOT NULL,
@@ -296,7 +305,7 @@ CREATE TABLE "MilkTrial" (
 );
 
 -- CreateTable
-CREATE TABLE "MilkSubscription" (
+CREATE TABLE IF NOT EXISTS "MilkSubscription" (
     "id" SERIAL NOT NULL,
     "userId" INTEGER,
     "adminId" INTEGER NOT NULL,
@@ -328,7 +337,7 @@ CREATE TABLE "MilkSubscription" (
 );
 
 -- CreateTable
-CREATE TABLE "MilkPayment" (
+CREATE TABLE IF NOT EXISTS "MilkPayment" (
     "id" SERIAL NOT NULL,
     "subscriptionId" INTEGER NOT NULL,
     "amount" DOUBLE PRECISION NOT NULL,
@@ -342,7 +351,7 @@ CREATE TABLE "MilkPayment" (
 );
 
 -- CreateTable
-CREATE TABLE "DeliveryBoyProfile" (
+CREATE TABLE IF NOT EXISTS "DeliveryBoyProfile" (
     "id" SERIAL NOT NULL,
     "adminId" INTEGER NOT NULL,
     "mobile" TEXT,
@@ -353,13 +362,13 @@ CREATE TABLE "DeliveryBoyProfile" (
     "accountStatus" TEXT NOT NULL DEFAULT 'Active',
     "dailyStatus" TEXT NOT NULL DEFAULT 'Available',
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    "updatedAt" TIMESTAMP(3) NOT NULL,
+    "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
     CONSTRAINT "DeliveryBoyProfile_pkey" PRIMARY KEY ("id")
 );
 
 -- CreateTable
-CREATE TABLE "DeliveryAvailability" (
+CREATE TABLE IF NOT EXISTS "DeliveryAvailability" (
     "id" SERIAL NOT NULL,
     "deliveryBoyId" INTEGER NOT NULL,
     "date" TIMESTAMP(3) NOT NULL,
@@ -370,7 +379,7 @@ CREATE TABLE "DeliveryAvailability" (
 );
 
 -- CreateTable
-CREATE TABLE "DeliveryAssignment" (
+CREATE TABLE IF NOT EXISTS "DeliveryAssignment" (
     "id" SERIAL NOT NULL,
     "orderType" TEXT NOT NULL,
     "orderId" INTEGER NOT NULL,
@@ -386,13 +395,13 @@ CREATE TABLE "DeliveryAssignment" (
     "notes" TEXT,
     "isActive" BOOLEAN NOT NULL DEFAULT true,
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    "updatedAt" TIMESTAMP(3) NOT NULL,
+    "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
     CONSTRAINT "DeliveryAssignment_pkey" PRIMARY KEY ("id")
 );
 
 -- CreateTable
-CREATE TABLE "UserAlert" (
+CREATE TABLE IF NOT EXISTS "UserAlert" (
     "id" SERIAL NOT NULL,
     "userId" INTEGER NOT NULL,
     "message" TEXT NOT NULL,
@@ -403,119 +412,155 @@ CREATE TABLE "UserAlert" (
 );
 
 -- CreateIndex
-CREATE UNIQUE INDEX "CustomRole_name_key" ON "CustomRole"("name");
+CREATE UNIQUE INDEX IF NOT EXISTS "CustomRole_name_key" ON "CustomRole"("name");
 
 -- CreateIndex
-CREATE UNIQUE INDEX "DeliveryBoyProfile_adminId_key" ON "DeliveryBoyProfile"("adminId");
+CREATE UNIQUE INDEX IF NOT EXISTS "DeliveryBoyProfile_adminId_key" ON "DeliveryBoyProfile"("adminId");
 
 -- CreateIndex
-CREATE UNIQUE INDEX "DeliveryAvailability_deliveryBoyId_date_key" ON "DeliveryAvailability"("deliveryBoyId", "date");
+CREATE UNIQUE INDEX IF NOT EXISTS "DeliveryAvailability_deliveryBoyId_date_key" ON "DeliveryAvailability"("deliveryBoyId", "date");
 
 -- CreateIndex
-CREATE UNIQUE INDEX "DeliveryAssignment_qrCode_key" ON "DeliveryAssignment"("qrCode");
+CREATE UNIQUE INDEX IF NOT EXISTS "DeliveryAssignment_qrCode_key" ON "DeliveryAssignment"("qrCode");
 
 -- CreateIndex
-CREATE UNIQUE INDEX "Cow_adminId_tagNo_key" ON "Cow"("adminId", "tagNo");
+CREATE UNIQUE INDEX IF NOT EXISTS "Cow_adminId_tagNo_key" ON "Cow"("adminId", "tagNo");
 
 -- CreateIndex
-CREATE UNIQUE INDEX "Order_orderNumber_key" ON "Order"("orderNumber");
+CREATE UNIQUE INDEX IF NOT EXISTS "Order_orderNumber_key" ON "Order"("orderNumber");
 
--- AddForeignKey
-ALTER TABLE "Admin" ADD CONSTRAINT "Admin_customRoleId_fkey" FOREIGN KEY ("customRoleId") REFERENCES "CustomRole"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+-- AddForeignKey (wrapped safely with constraint existence check)
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'Admin_customRoleId_fkey') THEN
+    ALTER TABLE "Admin" ADD CONSTRAINT "Admin_customRoleId_fkey" FOREIGN KEY ("customRoleId") REFERENCES "CustomRole"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+  END IF;
 
--- AddForeignKey
-ALTER TABLE "ConversionRule" ADD CONSTRAINT "ConversionRule_adminId_fkey" FOREIGN KEY ("adminId") REFERENCES "Admin"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'ConversionRule_adminId_fkey') THEN
+    ALTER TABLE "ConversionRule" ADD CONSTRAINT "ConversionRule_adminId_fkey" FOREIGN KEY ("adminId") REFERENCES "Admin"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+  END IF;
 
--- AddForeignKey
-ALTER TABLE "Cow" ADD CONSTRAINT "Cow_adminId_fkey" FOREIGN KEY ("adminId") REFERENCES "Admin"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'Cow_adminId_fkey') THEN
+    ALTER TABLE "Cow" ADD CONSTRAINT "Cow_adminId_fkey" FOREIGN KEY ("adminId") REFERENCES "Admin"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+  END IF;
 
--- AddForeignKey
-ALTER TABLE "ReproductionRecord" ADD CONSTRAINT "ReproductionRecord_adminId_fkey" FOREIGN KEY ("adminId") REFERENCES "Admin"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'ReproductionRecord_adminId_fkey') THEN
+    ALTER TABLE "ReproductionRecord" ADD CONSTRAINT "ReproductionRecord_adminId_fkey" FOREIGN KEY ("adminId") REFERENCES "Admin"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+  END IF;
 
--- AddForeignKey
-ALTER TABLE "FoodPurchase" ADD CONSTRAINT "FoodPurchase_adminId_fkey" FOREIGN KEY ("adminId") REFERENCES "Admin"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'FoodPurchase_adminId_fkey') THEN
+    ALTER TABLE "FoodPurchase" ADD CONSTRAINT "FoodPurchase_adminId_fkey" FOREIGN KEY ("adminId") REFERENCES "Admin"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+  END IF;
 
--- AddForeignKey
-ALTER TABLE "CowFoodRecord" ADD CONSTRAINT "CowFoodRecord_adminId_fkey" FOREIGN KEY ("adminId") REFERENCES "Admin"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'CowFoodRecord_adminId_fkey') THEN
+    ALTER TABLE "CowFoodRecord" ADD CONSTRAINT "CowFoodRecord_adminId_fkey" FOREIGN KEY ("adminId") REFERENCES "Admin"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+  END IF;
 
--- AddForeignKey
-ALTER TABLE "FoodIntake" ADD CONSTRAINT "FoodIntake_cowId_fkey" FOREIGN KEY ("cowId") REFERENCES "Cow"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'FoodIntake_cowId_fkey') THEN
+    ALTER TABLE "FoodIntake" ADD CONSTRAINT "FoodIntake_cowId_fkey" FOREIGN KEY ("cowId") REFERENCES "Cow"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+  END IF;
 
--- AddForeignKey
-ALTER TABLE "FoodIntake" ADD CONSTRAINT "FoodIntake_adminId_fkey" FOREIGN KEY ("adminId") REFERENCES "Admin"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'FoodIntake_adminId_fkey') THEN
+    ALTER TABLE "FoodIntake" ADD CONSTRAINT "FoodIntake_adminId_fkey" FOREIGN KEY ("adminId") REFERENCES "Admin"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+  END IF;
 
--- AddForeignKey
-ALTER TABLE "MilkRecord" ADD CONSTRAINT "MilkRecord_adminId_fkey" FOREIGN KEY ("adminId") REFERENCES "Admin"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'MilkRecord_adminId_fkey') THEN
+    ALTER TABLE "MilkRecord" ADD CONSTRAINT "MilkRecord_adminId_fkey" FOREIGN KEY ("adminId") REFERENCES "Admin"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+  END IF;
 
--- AddForeignKey
-ALTER TABLE "CowSale" ADD CONSTRAINT "CowSale_adminId_fkey" FOREIGN KEY ("adminId") REFERENCES "Admin"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'CowSale_adminId_fkey') THEN
+    ALTER TABLE "CowSale" ADD CONSTRAINT "CowSale_adminId_fkey" FOREIGN KEY ("adminId") REFERENCES "Admin"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+  END IF;
 
--- AddForeignKey
-ALTER TABLE "Treatment" ADD CONSTRAINT "Treatment_adminId_fkey" FOREIGN KEY ("adminId") REFERENCES "Admin"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'Treatment_adminId_fkey') THEN
+    ALTER TABLE "Treatment" ADD CONSTRAINT "Treatment_adminId_fkey" FOREIGN KEY ("adminId") REFERENCES "Admin"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+  END IF;
 
--- AddForeignKey
-ALTER TABLE "Item" ADD CONSTRAINT "Item_adminId_fkey" FOREIGN KEY ("adminId") REFERENCES "Admin"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'Item_adminId_fkey') THEN
+    ALTER TABLE "Item" ADD CONSTRAINT "Item_adminId_fkey" FOREIGN KEY ("adminId") REFERENCES "Admin"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+  END IF;
 
--- AddForeignKey
-ALTER TABLE "StockAdjustment" ADD CONSTRAINT "StockAdjustment_itemId_fkey" FOREIGN KEY ("itemId") REFERENCES "Item"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'StockAdjustment_itemId_fkey') THEN
+    ALTER TABLE "StockAdjustment" ADD CONSTRAINT "StockAdjustment_itemId_fkey" FOREIGN KEY ("itemId") REFERENCES "Item"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+  END IF;
 
--- AddForeignKey
-ALTER TABLE "StockAdjustment" ADD CONSTRAINT "StockAdjustment_adminId_fkey" FOREIGN KEY ("adminId") REFERENCES "Admin"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'StockAdjustment_adminId_fkey') THEN
+    ALTER TABLE "StockAdjustment" ADD CONSTRAINT "StockAdjustment_adminId_fkey" FOREIGN KEY ("adminId") REFERENCES "Admin"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+  END IF;
 
--- AddForeignKey
-ALTER TABLE "Order" ADD CONSTRAINT "Order_adminId_fkey" FOREIGN KEY ("adminId") REFERENCES "Admin"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'Order_adminId_fkey') THEN
+    ALTER TABLE "Order" ADD CONSTRAINT "Order_adminId_fkey" FOREIGN KEY ("adminId") REFERENCES "Admin"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+  END IF;
 
--- AddForeignKey
-ALTER TABLE "OrderItem" ADD CONSTRAINT "OrderItem_orderId_fkey" FOREIGN KEY ("orderId") REFERENCES "Order"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'OrderItem_orderId_fkey') THEN
+    ALTER TABLE "OrderItem" ADD CONSTRAINT "OrderItem_orderId_fkey" FOREIGN KEY ("orderId") REFERENCES "Order"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+  END IF;
 
--- AddForeignKey
-ALTER TABLE "CowDeath" ADD CONSTRAINT "CowDeath_adminId_fkey" FOREIGN KEY ("adminId") REFERENCES "Admin"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'CowDeath_adminId_fkey') THEN
+    ALTER TABLE "CowDeath" ADD CONSTRAINT "CowDeath_adminId_fkey" FOREIGN KEY ("adminId") REFERENCES "Admin"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+  END IF;
 
--- AddForeignKey
-ALTER TABLE "AnimalFeedingPlan" ADD CONSTRAINT "AnimalFeedingPlan_cowId_fkey" FOREIGN KEY ("cowId") REFERENCES "Cow"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'AnimalFeedingPlan_cowId_fkey') THEN
+    ALTER TABLE "AnimalFeedingPlan" ADD CONSTRAINT "AnimalFeedingPlan_cowId_fkey" FOREIGN KEY ("cowId") REFERENCES "Cow"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+  END IF;
 
--- AddForeignKey
-ALTER TABLE "AnimalFeedingPlan" ADD CONSTRAINT "AnimalFeedingPlan_adminId_fkey" FOREIGN KEY ("adminId") REFERENCES "Admin"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'AnimalFeedingPlan_adminId_fkey') THEN
+    ALTER TABLE "AnimalFeedingPlan" ADD CONSTRAINT "AnimalFeedingPlan_adminId_fkey" FOREIGN KEY ("adminId") REFERENCES "Admin"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+  END IF;
 
--- AddForeignKey
-ALTER TABLE "MilkAllocation" ADD CONSTRAINT "MilkAllocation_adminId_fkey" FOREIGN KEY ("adminId") REFERENCES "Admin"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'MilkAllocation_adminId_fkey') THEN
+    ALTER TABLE "MilkAllocation" ADD CONSTRAINT "MilkAllocation_adminId_fkey" FOREIGN KEY ("adminId") REFERENCES "Admin"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+  END IF;
 
--- AddForeignKey
-ALTER TABLE "CustomerMilkOrder" ADD CONSTRAINT "CustomerMilkOrder_adminId_fkey" FOREIGN KEY ("adminId") REFERENCES "Admin"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'CustomerMilkOrder_adminId_fkey') THEN
+    ALTER TABLE "CustomerMilkOrder" ADD CONSTRAINT "CustomerMilkOrder_adminId_fkey" FOREIGN KEY ("adminId") REFERENCES "Admin"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+  END IF;
 
--- AddForeignKey
-ALTER TABLE "CustomerMilkOrder" ADD CONSTRAINT "CustomerMilkOrder_productId_fkey" FOREIGN KEY ("productId") REFERENCES "Product"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'CustomerMilkOrder_productId_fkey') THEN
+    ALTER TABLE "CustomerMilkOrder" ADD CONSTRAINT "CustomerMilkOrder_productId_fkey" FOREIGN KEY ("productId") REFERENCES "Product"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+  END IF;
 
--- AddForeignKey
-ALTER TABLE "OrderHistoryLine" ADD CONSTRAINT "OrderHistoryLine_orderId_fkey" FOREIGN KEY ("orderId") REFERENCES "CustomerMilkOrder"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'OrderHistoryLine_orderId_fkey') THEN
+    ALTER TABLE "OrderHistoryLine" ADD CONSTRAINT "OrderHistoryLine_orderId_fkey" FOREIGN KEY ("orderId") REFERENCES "CustomerMilkOrder"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+  END IF;
 
--- AddForeignKey
-ALTER TABLE "Product" ADD CONSTRAINT "Product_adminId_fkey" FOREIGN KEY ("adminId") REFERENCES "Admin"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'Product_adminId_fkey') THEN
+    ALTER TABLE "Product" ADD CONSTRAINT "Product_adminId_fkey" FOREIGN KEY ("adminId") REFERENCES "Admin"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+  END IF;
 
--- AddForeignKey
-ALTER TABLE "MilkTrial" ADD CONSTRAINT "MilkTrial_adminId_fkey" FOREIGN KEY ("adminId") REFERENCES "Admin"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'MilkTrial_adminId_fkey') THEN
+    ALTER TABLE "MilkTrial" ADD CONSTRAINT "MilkTrial_adminId_fkey" FOREIGN KEY ("adminId") REFERENCES "Admin"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+  END IF;
 
--- AddForeignKey
-ALTER TABLE "MilkTrial" ADD CONSTRAINT "MilkTrial_productId_fkey" FOREIGN KEY ("productId") REFERENCES "Product"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'MilkTrial_productId_fkey') THEN
+    ALTER TABLE "MilkTrial" ADD CONSTRAINT "MilkTrial_productId_fkey" FOREIGN KEY ("productId") REFERENCES "Product"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+  END IF;
 
--- AddForeignKey
-ALTER TABLE "MilkSubscription" ADD CONSTRAINT "MilkSubscription_adminId_fkey" FOREIGN KEY ("adminId") REFERENCES "Admin"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'MilkSubscription_adminId_fkey') THEN
+    ALTER TABLE "MilkSubscription" ADD CONSTRAINT "MilkSubscription_adminId_fkey" FOREIGN KEY ("adminId") REFERENCES "Admin"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+  END IF;
 
--- AddForeignKey
-ALTER TABLE "MilkSubscription" ADD CONSTRAINT "MilkSubscription_productId_fkey" FOREIGN KEY ("productId") REFERENCES "Product"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'MilkSubscription_productId_fkey') THEN
+    ALTER TABLE "MilkSubscription" ADD CONSTRAINT "MilkSubscription_productId_fkey" FOREIGN KEY ("productId") REFERENCES "Product"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+  END IF;
 
--- AddForeignKey
-ALTER TABLE "MilkPayment" ADD CONSTRAINT "MilkPayment_subscriptionId_fkey" FOREIGN KEY ("subscriptionId") REFERENCES "MilkSubscription"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'MilkPayment_subscriptionId_fkey') THEN
+    ALTER TABLE "MilkPayment" ADD CONSTRAINT "MilkPayment_subscriptionId_fkey" FOREIGN KEY ("subscriptionId") REFERENCES "MilkSubscription"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+  END IF;
 
--- AddForeignKey
-ALTER TABLE "DeliveryBoyProfile" ADD CONSTRAINT "DeliveryBoyProfile_adminId_fkey" FOREIGN KEY ("adminId") REFERENCES "Admin"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'DeliveryBoyProfile_adminId_fkey') THEN
+    ALTER TABLE "DeliveryBoyProfile" ADD CONSTRAINT "DeliveryBoyProfile_adminId_fkey" FOREIGN KEY ("adminId") REFERENCES "Admin"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+  END IF;
 
--- AddForeignKey
-ALTER TABLE "DeliveryAvailability" ADD CONSTRAINT "DeliveryAvailability_deliveryBoyId_fkey" FOREIGN KEY ("deliveryBoyId") REFERENCES "Admin"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'DeliveryAvailability_deliveryBoyId_fkey') THEN
+    ALTER TABLE "DeliveryAvailability" ADD CONSTRAINT "DeliveryAvailability_deliveryBoyId_fkey" FOREIGN KEY ("deliveryBoyId") REFERENCES "Admin"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+  END IF;
 
--- AddForeignKey
-ALTER TABLE "DeliveryAssignment" ADD CONSTRAINT "DeliveryAssignment_deliveryBoyId_fkey" FOREIGN KEY ("deliveryBoyId") REFERENCES "Admin"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'DeliveryAssignment_deliveryBoyId_fkey') THEN
+    ALTER TABLE "DeliveryAssignment" ADD CONSTRAINT "DeliveryAssignment_deliveryBoyId_fkey" FOREIGN KEY ("deliveryBoyId") REFERENCES "Admin"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+  END IF;
 
--- AddForeignKey
-ALTER TABLE "UserAlert" ADD CONSTRAINT "UserAlert_userId_fkey" FOREIGN KEY ("userId") REFERENCES "Admin"("id") ON DELETE CASCADE ON UPDATE CASCADE;
-
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'UserAlert_userId_fkey') THEN
+    ALTER TABLE "UserAlert" ADD CONSTRAINT "UserAlert_userId_fkey" FOREIGN KEY ("userId") REFERENCES "Admin"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+  END IF;
+END $$;
