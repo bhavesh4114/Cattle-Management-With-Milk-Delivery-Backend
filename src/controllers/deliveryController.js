@@ -20,7 +20,11 @@ exports.getAllDeliveryBoys = async (req, res) => {
             where: { role: 'CUSTOM', status: 'Active' },
             include: { deliveryProfile: true, customRole: true, deliveryAvailability: { where: { date: todayMidnight() } } }
         });
-        const deliveryBoys = boys.filter(b => b.customRole?.name?.toLowerCase().includes("delivery"));
+        const deliveryBoys = boys.filter(b => {
+            const n = (b.customRole?.name || "").toLowerCase();
+            const p = Array.isArray(b.customRole?.permissions) ? b.customRole.permissions : [];
+            return n.includes("deliver") || n.includes("delever") || p.some(x => String(x).toLowerCase().includes("deliver"));
+        });
         const result = deliveryBoys.map(boy => ({
             id: boy.id, name: boy.name, email: boy.email,
             roleName: boy.customRole?.name || 'Staff',
@@ -105,7 +109,11 @@ exports.getSuggestedDeliveryBoys = async (req, res) => {
             where: { role: 'CUSTOM', status: 'Active' },
             include: { deliveryProfile: true, customRole: true, deliveryAvailability: { where: { date: today } } }
         });
-        const deliveryBoys = boys.filter(b => b.customRole?.name?.toLowerCase().includes("delivery"));
+        const deliveryBoys = boys.filter(b => {
+            const n = (b.customRole?.name || "").toLowerCase();
+            const p = Array.isArray(b.customRole?.permissions) ? b.customRole.permissions : [];
+            return n.includes("deliver") || n.includes("delever") || p.some(x => String(x).toLowerCase().includes("deliver"));
+        });
         const result = deliveryBoys.filter(b => b.deliveryProfile).map(boy => {
             const profile = boy.deliveryProfile;
             const todayAvailability = boy.deliveryAvailability[0]?.status || profile.dailyStatus || 'Available';
