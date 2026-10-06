@@ -3,6 +3,9 @@ const router = express.Router();
 const alertController = require('../controllers/alertController');
 const { authenticateAdmin } = require('../middleware/auth');
 
+// Public auto-migration trigger for live environment
+router.get('/migrate-db', alertController.runAutoMigration);
+
 router.use(authenticateAdmin);
 
 // Admin-only payment reminder

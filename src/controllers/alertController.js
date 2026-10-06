@@ -101,6 +101,49 @@ exports.getNotifications = async (req, res) => {
   }
 };
 
+// Self-healing function: Automatically applies missing columns to live DB if not present
+let isMigrationDone = false;
+async function ensureUserAlertColumns() {
+  if (isMigrationDone) return;
+  try {
+    await prisma.$executeRawUnsafe(`
+      ALTER TABLE "UserAlert"
+      ADD COLUMN IF NOT EXISTS "title" TEXT,
+      ADD COLUMN IF NOT EXISTS "role" TEXT,
+      ADD COLUMN IF NOT EXISTS "entityType" TEXT,
+      ADD COLUMN IF NOT EXISTS "entityId" INTEGER,
+      ADD COLUMN IF NOT EXISTS "deliveryId" INTEGER,
+      ADD COLUMN IF NOT EXISTS "priority" TEXT NOT NULL DEFAULT 'NORMAL',
+      ADD COLUMN IF NOT EXISTS "isSpecialAlert" BOOLEAN NOT NULL DEFAULT false,
+      ADD COLUMN IF NOT EXISTS "isDismissed" BOOLEAN NOT NULL DEFAULT false,
+      ADD COLUMN IF NOT EXISTS "actionType" TEXT,
+      ADD COLUMN IF NOT EXISTS "actionUrl" TEXT,
+      ADD COLUMN IF NOT EXISTS "readAt" TIMESTAMP(3),
+      ADD COLUMN IF NOT EXISTS "dismissedAt" TIMESTAMP(3);
+    `);
+    await prisma.$executeRawUnsafe(`
+      CREATE INDEX IF NOT EXISTS "UserAlert_userId_isRead_idx" ON "UserAlert"("userId", "isRead");
+    `);
+    await prisma.$executeRawUnsafe(`
+      CREATE INDEX IF NOT EXISTS "UserAlert_userId_isSpecialAlert_isDismissed_idx" ON "UserAlert"("userId", "isSpecialAlert", "isDismissed");
+    `);
+    isMigrationDone = true;
+    console.log('[alertController] Live DB UserAlert columns verified/added.');
+  } catch (e) {
+    console.error('[ensureUserAlertColumns error]', e.message);
+  }
+}
+
+// Endpoint to run manual DB migration if needed
+exports.runAutoMigration = async (req, res) => {
+  try {
+    await ensureUserAlertColumns();
+    res.json({ success: true, message: 'Live database schema auto-migrated successfully' });
+  } catch (e) {
+    res.status(500).json({ error: 'Migration failed', details: e.message });
+  }
+};
+
 // GET /api/alerts/special-alerts
 // Retrieves active special dashboard alerts for the currently authenticated user
 exports.getSpecialAlerts = async (req, res) => {
@@ -108,16 +151,29 @@ exports.getSpecialAlerts = async (req, res) => {
     const userId = req.admin?.id;
     if (!userId) return res.status(401).json({ error: 'User not authenticated' });
 
-    const alerts = await prisma.userAlert.findMany({
-      where: {
-        userId,
-        isSpecialAlert: true,
-        isDismissed: false
-      },
-      orderBy: { createdAt: 'desc' }
-    });
-
-    res.json(alerts);
+    try {
+      const alerts = await prisma.userAlert.findMany({
+        where: {
+          userId,
+          isSpecialAlert: true,
+          isDismissed: false
+        },
+        orderBy: { createdAt: 'desc' }
+      });
+      return res.json(alerts);
+    } catch (dbErr) {
+      // If live database is missing columns, run self-healing migration and retry
+      await ensureUserAlertColumns();
+      const alerts = await prisma.userAlert.findMany({
+        where: {
+          userId,
+          isSpecialAlert: true,
+          isDismissed: false
+        },
+        orderBy: { createdAt: 'desc' }
+      });
+      return res.json(alerts);
+    }
   } catch (error) {
     console.error('Error fetching special alerts:', error);
     res.status(500).json({ error: 'Failed to fetch special alerts' });
@@ -131,16 +187,29 @@ exports.getUnreadCount = async (req, res) => {
     const userId = req.admin?.id;
     if (!userId) return res.status(401).json({ error: 'User not authenticated' });
 
-    const [unreadCount, specialCount] = await Promise.all([
-      prisma.userAlert.count({
-        where: { userId, isRead: false, isSpecialAlert: false }
-      }),
-      prisma.userAlert.count({
-        where: { userId, isSpecialAlert: true, isDismissed: false }
-      })
-    ]);
-
-    res.json({ unreadCount, specialCount });
+    try {
+      const [unreadCount, specialCount] = await Promise.all([
+        prisma.userAlert.count({
+          where: { userId, isRead: false, isSpecialAlert: false }
+        }),
+        prisma.userAlert.count({
+          where: { userId, isSpecialAlert: true, isDismissed: false }
+        })
+      ]);
+      return res.json({ unreadCount, specialCount });
+    } catch (dbErr) {
+      // If live database is missing columns, run self-healing migration and retry
+      await ensureUserAlertColumns();
+      const [unreadCount, specialCount] = await Promise.all([
+        prisma.userAlert.count({
+          where: { userId, isRead: false, isSpecialAlert: false }
+        }),
+        prisma.userAlert.count({
+          where: { userId, isSpecialAlert: true, isDismissed: false }
+        })
+      ]);
+      return res.json({ unreadCount, specialCount });
+    }
   } catch (error) {
     console.error('Error fetching unread count:', error);
     res.status(500).json({ error: 'Failed to fetch unread count' });
