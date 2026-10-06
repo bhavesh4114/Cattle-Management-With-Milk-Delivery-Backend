@@ -37,4 +37,7 @@ router.put('/subscription/:id', authenticateAdmin, milkSubscriptionController.ed
 router.post('/subscription/:id/pay', authenticateAdmin, milkSubscriptionController.paySubscription);
 router.post('/subscription/verify-payment', authenticateAdmin, milkSubscriptionController.verifyPayment);
 
+// Advance Milk Quantity & Delivery Skip Requests
+router.use('/delivery-requests', require('./milkDeliveryRequestRoutes'));
+
 module.exports = router;

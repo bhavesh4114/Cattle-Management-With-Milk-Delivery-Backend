@@ -23,6 +23,7 @@ const deliveryRoutes = require("./src/routes/deliveryRoutes");
 const productRoutes = require("./src/routes/productRoutes");
 const alertRoutes = require("./src/routes/alertRoutes");
 const userQrRoutes = require("./src/routes/userQrRoutes");
+const milkDeliveryRequestRoutes = require("./src/routes/milkDeliveryRequestRoutes");
 
 const app = express();
 app.use(express.json({ limit: "50mb" }));
@@ -89,6 +90,8 @@ app.use("/api/delivery", deliveryRoutes);
 app.use("/api/products", productRoutes);
 app.use("/api/alerts", alertRoutes);
 app.use("/api/users", userQrRoutes);
+app.use("/api/milk-delivery-requests", milkDeliveryRequestRoutes);
+app.use("/api/delivery-requests", milkDeliveryRequestRoutes);
 
 app.use((err, req, res, next) => {
   console.error("[server] request failed", {

@@ -1,6 +1,7 @@
 const prisma = require('../config/db');
 const deliveryLeaveService = require('../services/deliveryLeaveService');
 const notificationService = require('../services/notificationService');
+const milkReqService = require('../services/milkDeliveryRequestService');
 
 function haversine(lat1, lon1, lat2, lon2) {
     const R = 6371;
@@ -281,7 +282,48 @@ exports.getMyDeliveries = async (req, res) => {
             let order = a.orderType === 'trial'
                 ? await prisma.milkTrial.findUnique({ where: { id: a.orderId }, include: { product: true } })
                 : await prisma.milkSubscription.findUnique({ where: { id: a.orderId }, include: { product: true } });
-            return { ...a, order };
+            if (!order) return { ...a, order: null };
+
+            // Check if customer has an approved request for this delivery date
+            const deliveryDate = a.deliveryDate || new Date();
+            const approvedReq = order.userId ? await milkReqService.getApprovedRequestForCustomer(order.userId, deliveryDate) : null;
+
+            let effectiveQuantity = order.dailyQuantity;
+            let isSkipped = false;
+            let hasExtraMilk = false;
+            let extraQuantity = 0;
+            let deliveryNoteTag = null;
+
+            if (approvedReq) {
+                if (approvedReq.requestType === 'SKIP_DELIVERY') {
+                    isSkipped = true;
+                    effectiveQuantity = 0;
+                    deliveryNoteTag = 'SKIPPED – Customer Not At Home';
+                } else if (approvedReq.requestType === 'EXTRA_MILK') {
+                    hasExtraMilk = true;
+                    extraQuantity = approvedReq.extraQuantity;
+                    effectiveQuantity = (order.dailyQuantity || 0) + approvedReq.extraQuantity;
+                    deliveryNoteTag = `Extra Milk (+${approvedReq.extraQuantity}L)`;
+                }
+            }
+
+            return {
+                ...a,
+                order,
+                deliveryRequest: approvedReq ? {
+                    id: approvedReq.id,
+                    requestType: approvedReq.requestType,
+                    extraQuantity: approvedReq.extraQuantity,
+                    totalQuantity: approvedReq.totalQuantity,
+                    status: approvedReq.status,
+                    note: approvedReq.note
+                } : null,
+                effectiveQuantity,
+                isSkipped,
+                hasExtraMilk,
+                extraQuantity,
+                deliveryNoteTag
+            };
         }));
         res.json(enriched.filter(e => e.order !== null));
     } catch (error) { res.status(500).json({ message: 'Server error', error: error.message }); }
@@ -510,15 +552,41 @@ async function updateOrderDeliveryStatus(tx, orderType, orderId, deliveryStatus)
     return tx.milkSubscription.update({ where: { id: parseInt(orderId) }, data: { deliveryStatus } });
 }
 
-function buildOrderItem(assignment, order) {
+async function buildOrderItem(assignment, order) {
     const unit = order?.product?.unit || (order?.milkType?.toLowerCase().includes('milk') ? 'L' : 'Qty');
+    const deliveryDate = assignment.deliveryDate || new Date();
+    const approvedReq = order?.userId ? await milkReqService.getApprovedRequestForCustomer(order.userId, deliveryDate) : null;
+
+    let quantity = order?.dailyQuantity;
+    let label = order?.product?.name || order?.milkType || `Order #${assignment.orderId}`;
+    let isSkipped = false;
+    let hasExtraMilk = false;
+    let extraQuantity = 0;
+
+    if (approvedReq) {
+        if (approvedReq.requestType === 'SKIP_DELIVERY') {
+            quantity = 0;
+            isSkipped = true;
+            label = `${label} (SKIPPED – Customer Not At Home)`;
+        } else if (approvedReq.requestType === 'EXTRA_MILK') {
+            quantity = (order?.dailyQuantity || 0) + approvedReq.extraQuantity;
+            hasExtraMilk = true;
+            extraQuantity = approvedReq.extraQuantity;
+            label = `${label} (+${approvedReq.extraQuantity}L Extra)`;
+        }
+    }
+
     return {
         assignmentId: assignment.id,
         orderId: assignment.orderId,
         orderType: assignment.orderType,
-        label: order?.product?.name || order?.milkType || `Order #${assignment.orderId}`,
-        quantity: order?.dailyQuantity,
+        label,
+        quantity,
         unit,
+        isSkipped,
+        hasExtraMilk,
+        extraQuantity,
+        regularQuantity: order?.dailyQuantity,
     };
 }
 
@@ -594,19 +662,21 @@ exports.scanQRCode = async (req, res) => {
             }
         });
 
+        const enrichedOrders = await Promise.all(matches.map(async ({ assignment, order }) => ({
+            assignmentId: assignment.id,
+            orderId: assignment.orderId,
+            orderType: assignment.orderType,
+            deliveryStatus: 'QR_SCANNED',
+            customerName: order.customerName,
+            address: order.address,
+            item: await buildOrderItem(assignment, order),
+        })));
+
         res.json({
             message: 'QR verified. Select the items being delivered.',
             customer: { id: user.id, name: user.name, email: user.email },
             deliveryBoyId,
-            orders: matches.map(({ assignment, order }) => ({
-                assignmentId: assignment.id,
-                orderId: assignment.orderId,
-                orderType: assignment.orderType,
-                deliveryStatus: 'QR_SCANNED',
-                customerName: order.customerName,
-                address: order.address,
-                item: buildOrderItem(assignment, order),
-            })),
+            orders: enrichedOrders,
         });
     } catch (error) { res.status(500).json({ message: 'Server error', error: error.message }); }
 };
@@ -636,7 +706,7 @@ exports.requestDeliveryConfirmation = async (req, res) => {
             return res.status(400).json({ message: 'Selected items do not belong to this order.' });
         }
 
-        const selectedItems = [buildOrderItem(assignment, order)];
+        const selectedItems = [await buildOrderItem(assignment, order)];
         await prisma.$transaction(async (tx) => {
             await tx.deliveryAssignment.update({
                 where: { id: assignment.id },

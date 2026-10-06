@@ -61,6 +61,8 @@ model Admin {
   userAlerts           UserAlert[]
   deliveryBoyLeaves    DeliveryBoyLeave[]     @relation("DeliveryBoyLeaves")
   approvedLeaves       DeliveryBoyLeave[]     @relation("AdminApprovedLeaves")
+  deliveryRequests        MilkDeliveryRequest[]  @relation("CustomerDeliveryRequests")
+  approvedDeliveryRequests MilkDeliveryRequest[] @relation("AdminApprovedRequests")
 }
 
 model ConversionRule {
@@ -462,6 +464,7 @@ model MilkSubscription {
   deliveryStatus     String?       @default("Pending") // Pending, Assigned, Out for Delivery, Delivered
   productId          Int?
   product            Product?      @relation(fields: [productId], references: [id])
+  deliveryRequests   MilkDeliveryRequest[]
 }
 
 model MilkPayment {
@@ -602,4 +605,28 @@ model DeliveryBoyLeave {
 
   @@index([deliveryBoyId, status])
   @@index([startDate, endDate])
+}
+
+model MilkDeliveryRequest {
+  id              Int               @id @default(autoincrement())
+  customerId      Int
+  customer        Admin             @relation(name: "CustomerDeliveryRequests", fields: [customerId], references: [id], onDelete: Cascade)
+  subscriptionId  Int?
+  subscription    MilkSubscription? @relation(fields: [subscriptionId], references: [id], onDelete: SetNull)
+  deliveryDate    DateTime
+  requestType     String            // EXTRA_MILK, SKIP_DELIVERY
+  regularQuantity Float             @default(0)
+  extraQuantity   Float             @default(0)
+  totalQuantity   Float             @default(0)
+  note            String?
+  status          String            @default("PENDING") // PENDING, APPROVED, REJECTED, CANCELLED
+  approvedById    Int?
+  approvedBy      Admin?            @relation(name: "AdminApprovedRequests", fields: [approvedById], references: [id], onDelete: SetNull)
+  approvedAt      DateTime?
+  rejectedReason  String?
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
+
+  @@index([customerId, deliveryDate])
+  @@index([status, deliveryDate])
 }
