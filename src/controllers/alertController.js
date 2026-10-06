@@ -1,9 +1,8 @@
-const prisma = require('../config/db');
+const prisma = require("../config/db");
 
-// Get users with pending payments
+// Get users with pending payments (Admin only)
 exports.getPendingPaymentUsers = async (req, res) => {
   try {
-    // Find subscriptions with AWAITING_PAYMENT or AWAITING_CUSTOMER status
     const pendingSubscriptions = await prisma.milkSubscription.findMany({
       where: { 
         status: { in: ['AWAITING_PAYMENT', 'AWAITING_CUSTOMER'] } 
@@ -15,9 +14,6 @@ exports.getPendingPaymentUsers = async (req, res) => {
       }
     });
 
-    // We can also check trials if trials have AWAITING_PAYMENT, but currently trials are just PENDING_ADMIN -> ACTIVE, wait, do trials have payment? Let's check status fields later if needed. For now subscriptions are the main ones with AWAITING_PAYMENT.
-    
-    // Group by user
     const usersMap = new Map();
     pendingSubscriptions.forEach(sub => {
       if (sub.userId) {
@@ -39,10 +35,10 @@ exports.getPendingPaymentUsers = async (req, res) => {
   }
 };
 
-// Send alert to users
+// Send custom alert to users (Admin broadcast)
 exports.sendAlerts = async (req, res) => {
   try {
-    const { userIds, message } = req.body;
+    const { userIds, message, title } = req.body;
     
     if (!userIds || userIds.length === 0 || !message) {
       return res.status(400).json({ error: 'Missing userIds or message' });
@@ -52,7 +48,10 @@ exports.sendAlerts = async (req, res) => {
       .filter(id => id != null)
       .map(userId => ({
         userId: parseInt(userId, 10),
-        message
+        title: title || 'Admin Announcement',
+        message,
+        type: 'GENERAL',
+        priority: 'NORMAL'
       }));
 
     if (alerts.length > 0) {
@@ -64,15 +63,164 @@ exports.sendAlerts = async (req, res) => {
     res.json({ success: true, message: 'Alerts sent successfully' });
   } catch (error) {
     console.error('Error sending alerts:', error);
-    require('fs').appendFileSync('error.log', '\\nALERT ERROR: ' + error.stack);
-    res.status(500).json({ error: 'Failed to send alerts', details: error.message, stack: error.stack });
+    res.status(500).json({ error: 'Failed to send alerts', details: error.message });
   }
 };
 
-// Get my alerts (for user)
+// =========================================================================
+// ROLE-BASED NOTIFICATION CENTER APIS
+// =========================================================================
+
+// GET /api/alerts/notifications
+// Retrieves notifications for the currently authenticated user
+exports.getNotifications = async (req, res) => {
+  try {
+    const userId = req.admin?.id;
+    if (!userId) return res.status(401).json({ error: 'User not authenticated' });
+
+    const { unreadOnly, limit = 50, includeSpecial } = req.query;
+    const where = { userId };
+    
+    if (unreadOnly === 'true') {
+      where.isRead = false;
+    }
+    if (includeSpecial !== 'true') {
+      where.isSpecialAlert = false;
+    }
+
+    const notifications = await prisma.userAlert.findMany({
+      where,
+      orderBy: { createdAt: 'desc' },
+      take: parseInt(limit, 10)
+    });
+
+    res.json(notifications);
+  } catch (error) {
+    console.error('Error fetching notifications:', error);
+    res.status(500).json({ error: 'Failed to fetch notifications' });
+  }
+};
+
+// GET /api/alerts/special-alerts
+// Retrieves active special dashboard alerts for the currently authenticated user
+exports.getSpecialAlerts = async (req, res) => {
+  try {
+    const userId = req.admin?.id;
+    if (!userId) return res.status(401).json({ error: 'User not authenticated' });
+
+    const alerts = await prisma.userAlert.findMany({
+      where: {
+        userId,
+        isSpecialAlert: true,
+        isDismissed: false
+      },
+      orderBy: { createdAt: 'desc' }
+    });
+
+    res.json(alerts);
+  } catch (error) {
+    console.error('Error fetching special alerts:', error);
+    res.status(500).json({ error: 'Failed to fetch special alerts' });
+  }
+};
+
+// GET /api/alerts/unread-count
+// Returns unread notifications count + active special alerts count
+exports.getUnreadCount = async (req, res) => {
+  try {
+    const userId = req.admin?.id;
+    if (!userId) return res.status(401).json({ error: 'User not authenticated' });
+
+    const [unreadCount, specialCount] = await Promise.all([
+      prisma.userAlert.count({
+        where: { userId, isRead: false, isSpecialAlert: false }
+      }),
+      prisma.userAlert.count({
+        where: { userId, isSpecialAlert: true, isDismissed: false }
+      })
+    ]);
+
+    res.json({ unreadCount, specialCount });
+  } catch (error) {
+    console.error('Error fetching unread count:', error);
+    res.status(500).json({ error: 'Failed to fetch unread count' });
+  }
+};
+
+// PUT /api/alerts/:id/read
+// Mark a notification as read
+exports.markAsRead = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const userId = req.admin?.id;
+
+    // Verify ownership
+    const alert = await prisma.userAlert.findUnique({ where: { id: parseInt(id, 10) } });
+    if (!alert) return res.status(404).json({ error: 'Alert not found' });
+    if (alert.userId !== userId && req.admin?.role !== 'ADMIN') {
+      return res.status(403).json({ error: 'Unauthorized to mark this alert as read' });
+    }
+
+    await prisma.userAlert.update({
+      where: { id: parseInt(id, 10) },
+      data: { isRead: true, readAt: new Date() }
+    });
+
+    res.json({ success: true, message: 'Notification marked as read' });
+  } catch (error) {
+    console.error('Error marking alert as read:', error);
+    res.status(500).json({ error: 'Failed to mark alert as read' });
+  }
+};
+
+// PUT /api/alerts/mark-all-read
+// Mark all notifications for authenticated user as read
+exports.markAllAsRead = async (req, res) => {
+  try {
+    const userId = req.admin?.id;
+    if (!userId) return res.status(401).json({ error: 'User not authenticated' });
+
+    await prisma.userAlert.updateMany({
+      where: { userId, isRead: false },
+      data: { isRead: true, readAt: new Date() }
+    });
+
+    res.json({ success: true, message: 'All notifications marked as read' });
+  } catch (error) {
+    console.error('Error marking all alerts as read:', error);
+    res.status(500).json({ error: 'Failed to mark all as read' });
+  }
+};
+
+// PUT /api/alerts/:id/dismiss
+// Dismiss a special dashboard alert
+exports.dismissSpecialAlert = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const userId = req.admin?.id;
+
+    const alert = await prisma.userAlert.findUnique({ where: { id: parseInt(id, 10) } });
+    if (!alert) return res.status(404).json({ error: 'Alert not found' });
+    if (alert.userId !== userId && req.admin?.role !== 'ADMIN') {
+      return res.status(403).json({ error: 'Unauthorized to dismiss this alert' });
+    }
+
+    await prisma.userAlert.update({
+      where: { id: parseInt(id, 10) },
+      data: { isDismissed: true, dismissedAt: new Date(), isRead: true }
+    });
+
+    res.json({ success: true, message: 'Alert dismissed' });
+  } catch (error) {
+    console.error('Error dismissing alert:', error);
+    res.status(500).json({ error: 'Failed to dismiss alert' });
+  }
+};
+
+// Backward-compatible endpoint for existing AlertPopup.jsx
 exports.getMyAlerts = async (req, res) => {
   try {
-    const userId = (req.admin && req.admin.id) ? req.admin.id : (req.user && req.user.id ? req.user.id : null);
+    const userId = req.admin?.id;
     if (!userId) {
       return res.status(401).json({ error: 'User not authenticated' });
     }
@@ -84,20 +232,5 @@ exports.getMyAlerts = async (req, res) => {
   } catch (error) {
     console.error('Error fetching alerts:', error);
     res.status(500).json({ error: 'Failed to fetch alerts' });
-  }
-};
-
-// Mark alert as read
-exports.markAsRead = async (req, res) => {
-  try {
-    const { id } = req.params;
-    await prisma.userAlert.update({
-      where: { id: parseInt(id) },
-      data: { isRead: true }
-    });
-    res.json({ success: true });
-  } catch (error) {
-    console.error('Error marking alert as read:', error);
-    res.status(500).json({ error: 'Failed to mark alert as read' });
   }
 };

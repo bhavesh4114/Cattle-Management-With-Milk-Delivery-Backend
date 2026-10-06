@@ -14,6 +14,13 @@ const getReports = async (req, res) => {
     endDate.setUTCHours(23, 59, 59, 999);
 
     const adminId = req.admin.id;
+    const userAccount = await prisma.admin.findUnique({
+      where: { id: adminId },
+      include: { customRole: true }
+    });
+    const roleName = (userAccount?.customRole?.name || "").toLowerCase();
+    const isUser = userAccount?.role === "CUSTOM" && (roleName.includes("user") || (userAccount?.name || "").toLowerCase().includes("user"));
+
     let cowCondition = { adminId };
     if (cowId && cowId !== "all") {
       const cow = await prisma.cow.findFirst({ where: { name: cowId, adminId } });
@@ -22,7 +29,7 @@ const getReports = async (req, res) => {
       }
     }
 
-    const report = await reportService.generateReport(type, startDate, endDate, cowCondition, adminId);
+    const report = await reportService.generateReport(type, startDate, endDate, cowCondition, adminId, isUser);
     res.json(report);
   } catch (error) {
     if (error.message === "Invalid report type") {

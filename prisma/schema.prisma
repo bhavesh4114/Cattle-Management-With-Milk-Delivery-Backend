@@ -59,6 +59,8 @@ model Admin {
   deliveryHistories     DeliveryHistory[]
   deliveryAvailability DeliveryAvailability[]
   userAlerts           UserAlert[]
+  deliveryBoyLeaves    DeliveryBoyLeave[]     @relation("DeliveryBoyLeaves")
+  approvedLeaves       DeliveryBoyLeave[]     @relation("AdminApprovedLeaves")
 }
 
 model ConversionRule {
@@ -528,21 +530,39 @@ model DeliveryAssignment {
 
   notes          String?
   isActive       Boolean  @default(true)
+  previousDeliveryBoyId Int?
+  needsReassignment     Boolean  @default(false)
+  reassignmentReason    String?
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
 }
 
 model UserAlert {
-  id        Int      @id @default(autoincrement())
-  userId    Int
-  user      Admin    @relation(fields: [userId], references: [id], onDelete: Cascade)
-  message   String
-  type      String   @default("GENERAL")
-  orderType String?
-  orderId   Int?
-  metadata  Json?
-  isRead    Boolean  @default(false)
-  createdAt DateTime @default(now())
+  id             Int       @id @default(autoincrement())
+  userId         Int
+  user           Admin     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  title          String?
+  message        String
+  type           String    @default("GENERAL")
+  role           String?
+  orderType      String?
+  orderId        Int?
+  entityType     String?
+  entityId       Int?
+  deliveryId     Int?
+  priority       String    @default("NORMAL")
+  isSpecialAlert Boolean   @default(false)
+  isDismissed    Boolean   @default(false)
+  actionType     String?
+  actionUrl      String?
+  metadata       Json?
+  isRead         Boolean   @default(false)
+  readAt         DateTime?
+  dismissedAt    DateTime?
+  createdAt      DateTime  @default(now())
+
+  @@index([userId, isRead])
+  @@index([userId, isSpecialAlert, isDismissed])
 }
 
 model DeliveryHistory {
@@ -562,4 +582,24 @@ model DeliveryHistory {
   metadata           Json?
   createdAt          DateTime @default(now())
   updatedAt          DateTime @updatedAt
+}
+
+model DeliveryBoyLeave {
+  id              Int       @id @default(autoincrement())
+  deliveryBoyId   Int
+  deliveryBoy     Admin     @relation(name: "DeliveryBoyLeaves", fields: [deliveryBoyId], references: [id], onDelete: Cascade)
+  startDate       DateTime
+  endDate         DateTime
+  reason          String
+  status          String    @default("PENDING") // PENDING, APPROVED, REJECTED, CANCELLED
+  appliedAt       DateTime  @default(now())
+  approvedById    Int?
+  approvedBy      Admin?    @relation(name: "AdminApprovedLeaves", fields: [approvedById], references: [id], onDelete: SetNull)
+  approvedAt      DateTime?
+  rejectionReason String?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  @@index([deliveryBoyId, status])
+  @@index([startDate, endDate])
 }

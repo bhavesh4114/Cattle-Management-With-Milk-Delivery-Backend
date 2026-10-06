@@ -1,0 +1,18 @@
+-- AlterTable UserAlert
+ALTER TABLE "UserAlert"
+ADD COLUMN IF NOT EXISTS "title" TEXT,
+ADD COLUMN IF NOT EXISTS "role" TEXT,
+ADD COLUMN IF NOT EXISTS "entityType" TEXT,
+ADD COLUMN IF NOT EXISTS "entityId" INTEGER,
+ADD COLUMN IF NOT EXISTS "deliveryId" INTEGER,
+ADD COLUMN IF NOT EXISTS "priority" TEXT NOT NULL DEFAULT 'NORMAL',
+ADD COLUMN IF NOT EXISTS "isSpecialAlert" BOOLEAN NOT NULL DEFAULT false,
+ADD COLUMN IF NOT EXISTS "isDismissed" BOOLEAN NOT NULL DEFAULT false,
+ADD COLUMN IF NOT EXISTS "actionType" TEXT,
+ADD COLUMN IF NOT EXISTS "actionUrl" TEXT,
+ADD COLUMN IF NOT EXISTS "readAt" TIMESTAMP(3),
+ADD COLUMN IF NOT EXISTS "dismissedAt" TIMESTAMP(3);
+
+-- CreateIndex
+CREATE INDEX IF NOT EXISTS "UserAlert_userId_isRead_idx" ON "UserAlert"("userId", "isRead");
+CREATE INDEX IF NOT EXISTS "UserAlert_userId_isSpecialAlert_isDismissed_idx" ON "UserAlert"("userId", "isSpecialAlert", "isDismissed");

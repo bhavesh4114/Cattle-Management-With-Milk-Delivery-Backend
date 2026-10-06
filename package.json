@@ -10,6 +10,8 @@
     "prisma:deploy": "prisma migrate deploy",
     "prisma:migrate": "prisma migrate dev",
     "prisma:seed": "node prisma/seed.js",
+    "db:start": "pg_ctl -D ../.pgdata start",
+    "db:stop": "pg_ctl -D ../.pgdata stop",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [],

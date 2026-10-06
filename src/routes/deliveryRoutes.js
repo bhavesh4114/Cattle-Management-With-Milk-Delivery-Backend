@@ -21,6 +21,8 @@ router.get('/boys/my-availability', dc.getAvailability);
 router.get('/suggest/:orderType/:orderId', dc.getSuggestedDeliveryBoys);
 router.post('/assign/:orderType/:orderId', dc.assignDelivery);
 router.get('/history/:orderType/:orderId', dc.getAssignmentHistory);
+router.put('/assignment/:assignmentId/reschedule', dc.rescheduleDelivery);
+router.put('/reschedule/:orderType/:orderId', dc.rescheduleByOrder);
 
 // Delivery Boy Dashboard
 router.get('/my-deliveries', dc.getMyDeliveries);
@@ -37,5 +39,21 @@ router.post('/:orderId/request-confirmation', dc.requestDeliveryConfirmation);
 router.post('/:orderId/confirm', dc.confirmDelivery);
 router.post('/:orderId/report-issue', dc.reportDeliveryIssue);
 router.get('/:orderId/history', dc.getDeliveryHistory);
+
+// Leave Management (Delivery Boy)
+router.post('/leaves', dc.applyLeave);
+router.get('/my-leaves', dc.getMyLeaves);
+router.patch('/leaves/:id/cancel', dc.cancelLeave);
+
+// Leave Management (Admin)
+router.get('/admin/leaves', dc.getAllLeaves);
+router.get('/admin/leaves/:id/affected-deliveries', dc.getAffectedDeliveries);
+router.post('/admin/leaves/:id/approve-and-assign', dc.approveAndAssign);
+router.patch('/admin/leaves/:id/approve', dc.approveLeave);
+router.patch('/admin/leaves/:id/reject', dc.rejectLeave);
+
+// Reassignment Queue (Admin)
+router.get('/admin/reassignments', dc.getReassignmentQueue);
+router.patch('/admin/reassign/:assignmentId', dc.manualReassign);
 
 module.exports = router;

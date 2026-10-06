@@ -1,4 +1,6 @@
 const prisma = require('../config/db');
+const deliveryLeaveService = require('../services/deliveryLeaveService');
+const notificationService = require('../services/notificationService');
 
 function haversine(lat1, lon1, lat2, lon2) {
     const R = 6371;
@@ -18,7 +20,18 @@ exports.getAllDeliveryBoys = async (req, res) => {
     try {
         const boys = await prisma.admin.findMany({
             where: { role: 'CUSTOM', status: 'Active' },
-            include: { deliveryProfile: true, customRole: true, deliveryAvailability: { where: { date: todayMidnight() } } }
+            include: {
+                deliveryProfile: true,
+                customRole: true,
+                deliveryAvailability: { where: { date: todayMidnight() } },
+                deliveryBoyLeaves: {
+                    where: {
+                        status: 'APPROVED',
+                        startDate: { lte: todayMidnight() },
+                        endDate: { gte: todayMidnight() }
+                    }
+                }
+            }
         });
         const deliveryBoys = boys.filter(b => {
             const n = (b.customRole?.name || "").toLowerCase();
@@ -175,6 +188,25 @@ exports.assignDelivery = async (req, res) => {
                     deliveryBoyName: boy?.name });
             }
         }
+        // ✅ LEAVE VALIDATION: Block delivery assignment if delivery boy is on approved leave
+        const leaveActive = await prisma.deliveryBoyLeave.findFirst({
+            where: {
+                deliveryBoyId: boyId,
+                status: 'APPROVED',
+                startDate: { lte: today },
+                endDate: { gte: today }
+            }
+        });
+        if (leaveActive) {
+            const startStr = leaveActive.startDate.toISOString().split('T')[0];
+            const endStr = leaveActive.endDate.toISOString().split('T')[0];
+            return res.status(400).json({
+                message: `Cannot assign delivery: Delivery boy is on approved leave (${startStr} to ${endStr}).`,
+                reason: 'delivery_boy_on_leave',
+                leave: leaveActive
+            });
+        }
+
         const avail = await prisma.deliveryAvailability.findUnique({ where: { deliveryBoyId_date: { deliveryBoyId: boyId, date: today } } });
         const todayStatus = avail?.status || profile?.dailyStatus || 'Available';
         if (todayStatus !== 'Available' && !forceAssign) {
@@ -189,6 +221,21 @@ exports.assignDelivery = async (req, res) => {
         });
         if (orderType === 'trial') { await prisma.milkTrial.update({ where: { id: orderIdInt }, data: { deliveryBoyId: boyId, deliveryStatus: 'Assigned' } }); }
         else { await prisma.milkSubscription.update({ where: { id: orderIdInt }, data: { deliveryBoyId: boyId, deliveryStatus: 'Assigned' } }); }
+
+        // Trigger Role-Based Delivery Assigned Notification
+        const boyUser = await prisma.admin.findUnique({ where: { id: boyId }, select: { name: true } });
+        notificationService.notifyDeliveryAssigned({
+            boyId,
+            boyName: boyUser?.name,
+            orderId: orderIdInt,
+            orderType,
+            customerName: order.customerName,
+            customerUserId: order.userId,
+            adminId,
+            deliveryDate: todayMidnight(),
+            isReassignment: false
+        }).catch(err => console.error('[assignDelivery notification error]', err));
+
         res.json({ message: 'Delivery assigned successfully', assignment });
     } catch (error) { res.status(500).json({ message: 'Server error', error: error.message }); }
 };
@@ -208,8 +255,27 @@ exports.getAssignmentHistory = async (req, res) => {
 exports.getMyDeliveries = async (req, res) => {
     try {
         const deliveryBoyId = req.admin.id;
+        const isAdmin = req.admin.role === 'ADMIN';
+        const { filter } = req.query;
+        const where = {};
+        if (!isAdmin) {
+            where.deliveryBoyId = deliveryBoyId;
+        }
+
+        if (filter === 'active') {
+            where.isActive = true;
+            where.deliveryStatus = { not: 'Delivered' };
+        } else if (filter === 'completed') {
+            where.deliveryStatus = 'Delivered';
+        } else {
+            where.OR = [
+                { isActive: true },
+                { deliveryStatus: 'Delivered' }
+            ];
+        }
+
         const assignments = await prisma.deliveryAssignment.findMany({
-            where: { deliveryBoyId, isActive: true }, orderBy: { createdAt: 'desc' }
+            where, orderBy: { createdAt: 'desc' }
         });
         const enriched = await Promise.all(assignments.map(async (a) => {
             let order = a.orderType === 'trial'
@@ -226,15 +292,70 @@ exports.updateDeliveryStatus = async (req, res) => {
         const { assignmentId } = req.params;
         const { deliveryStatus, notes } = req.body;
         const deliveryBoyId = req.admin.id;
-        const assignment = await prisma.deliveryAssignment.findFirst({ where: { id: parseInt(assignmentId), deliveryBoyId, isActive: true } });
+        const isAdmin = req.admin.role === 'ADMIN';
+
+        const id = parseInt(assignmentId, 10);
+        if (isNaN(id)) return res.status(400).json({ message: 'Invalid assignment ID' });
+
+        const where = { id };
+        if (!isAdmin) {
+            where.deliveryBoyId = deliveryBoyId;
+        }
+
+        const assignment = await prisma.deliveryAssignment.findFirst({ where });
         if (!assignment) return res.status(404).json({ message: 'Assignment not found' });
 
-        let extraData = { deliveryStatus, notes: notes || assignment.notes };
+        let extraData = {
+            deliveryStatus,
+            notes: notes || assignment.notes,
+            isActive: deliveryStatus !== 'Rejected'
+        };
 
-        const updated = await prisma.deliveryAssignment.update({ where: { id: parseInt(assignmentId) }, data: extraData });
+        const updated = await prisma.deliveryAssignment.update({ where: { id }, data: extraData });
         if (assignment.orderType === 'trial') { await prisma.milkTrial.update({ where: { id: assignment.orderId }, data: { deliveryStatus } }); }
         else { await prisma.milkSubscription.update({ where: { id: assignment.orderId }, data: { deliveryStatus } }); }
-        if (deliveryStatus === 'Rejected') { await prisma.deliveryAssignment.update({ where: { id: parseInt(assignmentId) }, data: { isActive: false } }); }
+        if (deliveryStatus === 'Rejected') { await prisma.deliveryAssignment.update({ where: { id }, data: { isActive: false } }); }
+
+        // Trigger notifications based on status
+        (async () => {
+            try {
+                const order = assignment.orderType === 'trial'
+                    ? await prisma.milkTrial.findUnique({ where: { id: assignment.orderId } })
+                    : await prisma.milkSubscription.findUnique({ where: { id: assignment.orderId } });
+
+                if (deliveryStatus === 'Out for Delivery') {
+                    await notificationService.notifyOutForDelivery({
+                        orderId: assignment.orderId,
+                        orderType: assignment.orderType,
+                        customerUserId: order?.userId,
+                        boyId: deliveryBoyId,
+                        adminId: order?.adminId
+                    });
+                } else if (deliveryStatus === 'Rejected') {
+                    await notificationService.notifyDeliveryFailed({
+                        orderId: assignment.orderId,
+                        orderType: assignment.orderType,
+                        customerUserId: order?.userId,
+                        boyId: deliveryBoyId,
+                        adminId: order?.adminId,
+                        reason: notes || 'Delivery rejected by delivery boy'
+                    });
+                } else if (deliveryStatus === 'Delivered') {
+                    const boy = await prisma.admin.findUnique({ where: { id: deliveryBoyId }, select: { name: true } });
+                    await notificationService.notifyDeliveryCompleted({
+                        orderId: assignment.orderId,
+                        orderType: assignment.orderType,
+                        customerUserId: order?.userId,
+                        boyId: deliveryBoyId,
+                        boyName: boy?.name,
+                        adminId: order?.adminId
+                    });
+                }
+            } catch (err) {
+                console.error('[updateDeliveryStatus notification error]', err);
+            }
+        })();
+
         res.json({ message: `Status updated to ${deliveryStatus}`, updated });
     } catch (error) { res.status(500).json({ message: 'Server error', error: error.message }); }
 };
@@ -635,6 +756,16 @@ exports.confirmDelivery = async (req, res) => {
                 data: { isRead: true },
             });
 
+            // Trigger Role-Based Delivery Completed Notifications
+            notificationService.notifyDeliveryCompleted({
+                orderId,
+                orderType,
+                customerUserId: userId,
+                boyId: assignment.deliveryBoyId,
+                boyName: assignment.deliveryBoy?.name,
+                adminId
+            }).catch(err => console.error('[confirmDelivery notify error]', err));
+
             return updatedAssignment;
         });
 
@@ -687,6 +818,16 @@ exports.reportDeliveryIssue = async (req, res) => {
                     metadata: { userId, deliveryBoyId: assignment.deliveryBoyId },
                 },
             });
+
+            // Trigger Role-Based Delivery Issue Notification + Special Alert
+            notificationService.notifyDeliveryIssue({
+                orderId,
+                orderType,
+                customerUserId: userId,
+                boyId: assignment.deliveryBoyId,
+                adminId: order.adminId,
+                issue
+            }).catch(err => console.error('[reportDeliveryIssue notify error]', err));
         });
 
         res.json({ message: 'Issue reported. Admin has been notified.' });
@@ -705,3 +846,251 @@ exports.getDeliveryHistory = async (req, res) => {
     } catch (error) { res.status(500).json({ message: 'Server error', error: error.message }); }
 };
 
+
+
+// ==========================================
+// Delivery Boy Leave & Reassignment Handlers
+// ==========================================
+
+exports.applyLeave = async (req, res) => {
+    try {
+        const deliveryBoyId = req.admin.id;
+        const leave = await deliveryLeaveService.applyLeave(deliveryBoyId, req.body);
+        res.status(201).json({ message: "Leave request submitted successfully", leave });
+    } catch (error) {
+        res.status(400).json({ message: error.message });
+    }
+};
+
+exports.getMyLeaves = async (req, res) => {
+    try {
+        const deliveryBoyId = req.admin.id;
+        const leaves = await deliveryLeaveService.getMyLeaves(deliveryBoyId);
+        res.json(leaves);
+    } catch (error) {
+        res.status(500).json({ message: "Server error", error: error.message });
+    }
+};
+
+exports.cancelLeave = async (req, res) => {
+    try {
+        const leaveId = req.params.id;
+        const leave = await deliveryLeaveService.cancelLeave(leaveId, req.admin.id, req.admin.role);
+        res.json({ message: "Leave request cancelled successfully", leave });
+    } catch (error) {
+        res.status(400).json({ message: error.message });
+    }
+};
+
+exports.getAllLeaves = async (req, res) => {
+    try {
+        const leaves = await deliveryLeaveService.getAllLeaves(req.query);
+        res.json(leaves);
+    } catch (error) {
+        res.status(500).json({ message: "Server error", error: error.message });
+    }
+};
+
+exports.getAffectedDeliveries = async (req, res) => {
+    try {
+        if (req.admin.role !== 'ADMIN' && !(req.admin.permissions && req.admin.permissions.includes('*'))) {
+            return res.status(403).json({ message: "Admin access required" });
+        }
+        const leaveId = req.params.id;
+        const result = await deliveryLeaveService.getAffectedDeliveriesForLeave(leaveId);
+        res.json(result);
+    } catch (error) {
+        res.status(400).json({ message: error.message });
+    }
+};
+
+exports.approveLeave = async (req, res) => {
+    try {
+        if (req.admin.role !== 'ADMIN' && !(req.admin.permissions && req.admin.permissions.includes('*'))) {
+            return res.status(403).json({ message: "Admin access required" });
+        }
+        const leaveId = req.params.id;
+        const { assignmentsByDate, globalDeliveryBoyId, notes } = req.body || {};
+        const result = await deliveryLeaveService.directApproveAndAssign(leaveId, req.admin.id, {
+            assignmentsByDate,
+            globalDeliveryBoyId,
+            notes
+        });
+        res.json({ message: "Leave approved and deliveries processed successfully", ...result });
+    } catch (error) {
+        res.status(400).json({ message: error.message });
+    }
+};
+
+exports.approveAndAssign = exports.approveLeave;
+
+exports.rejectLeave = async (req, res) => {
+    try {
+        if (req.admin.role !== 'ADMIN' && !(req.admin.permissions && req.admin.permissions.includes('*'))) {
+            return res.status(403).json({ message: "Admin access required" });
+        }
+        const leaveId = req.params.id;
+        const leave = await deliveryLeaveService.rejectLeave(leaveId, req.admin.id, req.body.reason);
+        res.json({ message: "Leave rejected successfully", leave });
+    } catch (error) {
+        res.status(400).json({ message: error.message });
+    }
+};
+
+exports.getReassignmentQueue = async (req, res) => {
+    try {
+        if (req.admin.role !== 'ADMIN' && !(req.admin.permissions && req.admin.permissions.includes('*'))) {
+            return res.status(403).json({ message: "Admin access required" });
+        }
+        const queue = await deliveryLeaveService.getReassignmentQueue();
+        res.json(queue);
+    } catch (error) {
+        res.status(500).json({ message: "Server error", error: error.message });
+    }
+};
+
+exports.manualReassign = async (req, res) => {
+    try {
+        if (req.admin.role !== 'ADMIN' && !(req.admin.permissions && req.admin.permissions.includes('*'))) {
+            return res.status(403).json({ message: "Admin access required" });
+        }
+        const assignmentId = req.params.assignmentId;
+        const { deliveryBoyId, notes } = req.body;
+        if (!deliveryBoyId) {
+            return res.status(400).json({ message: "New delivery boy ID is required" });
+        }
+        const updated = await deliveryLeaveService.manualReassign(assignmentId, deliveryBoyId, req.admin.id, notes);
+        res.json({ message: "Delivery manually reassigned successfully", assignment: updated });
+    } catch (error) {
+        res.status(400).json({ message: error.message });
+    }
+};
+
+
+// =========================================================================
+// DELIVERY DATE RESCHEDULE FLOW (Requirement Section 8)
+// =========================================================================
+
+exports.rescheduleDelivery = async (req, res) => {
+    try {
+        const { assignmentId } = req.params;
+        const { newDate, reason } = req.body;
+        const adminId = req.admin.id;
+
+        if (!newDate) {
+            return res.status(400).json({ message: "New delivery date is required." });
+        }
+
+        const assignment = await prisma.deliveryAssignment.findUnique({
+            where: { id: parseInt(assignmentId, 10) },
+            include: { deliveryBoy: { select: { id: true, name: true } } }
+        });
+
+        if (!assignment) {
+            return res.status(404).json({ message: "Delivery assignment not found." });
+        }
+
+        const order = assignment.orderType === 'trial'
+            ? await prisma.milkTrial.findUnique({ where: { id: assignment.orderId } })
+            : await prisma.milkSubscription.findUnique({ where: { id: assignment.orderId } });
+
+        if (!order) {
+            return res.status(404).json({ message: "Associated order not found." });
+        }
+
+        const oldDate = assignment.deliveryDate;
+        const targetNewDate = new Date(newDate);
+
+        // Update assignment deliveryDate
+        const updated = await prisma.deliveryAssignment.update({
+            where: { id: assignment.id },
+            data: {
+                deliveryDate: targetNewDate,
+                notes: reason ? `${assignment.notes ? assignment.notes + " | " : ""}Rescheduled: ${reason}` : assignment.notes
+            }
+        });
+
+        // Trigger Notification + Special Alerts for Admin, Delivery Boy, and Customer!
+        await notificationService.notifyDeliveryDateChanged({
+            orderId: assignment.orderId,
+            orderType: assignment.orderType,
+            oldDate,
+            newDate: targetNewDate,
+            boyId: assignment.deliveryBoyId,
+            customerUserId: order.userId,
+            adminId,
+            customerName: order.customerName
+        });
+
+        res.json({
+            message: "Delivery date updated successfully",
+            assignment: updated,
+            oldDate,
+            newDate: targetNewDate
+        });
+    } catch (error) {
+        console.error("Reschedule delivery error:", error);
+        res.status(500).json({ message: "Server error", error: error.message });
+    }
+};
+
+exports.rescheduleByOrder = async (req, res) => {
+    try {
+        const { orderType, orderId } = req.params;
+        const { newDate, reason } = req.body;
+        const adminId = req.admin.id;
+
+        if (!newDate) {
+            return res.status(400).json({ message: "New delivery date is required." });
+        }
+
+        const assignment = await prisma.deliveryAssignment.findFirst({
+            where: { orderType, orderId: parseInt(orderId, 10), isActive: true },
+            include: { deliveryBoy: { select: { id: true, name: true } } }
+        });
+
+        if (!assignment) {
+            return res.status(404).json({ message: "Active delivery assignment not found for this order." });
+        }
+
+        const order = assignment.orderType === 'trial'
+            ? await prisma.milkTrial.findUnique({ where: { id: assignment.orderId } })
+            : await prisma.milkSubscription.findUnique({ where: { id: assignment.orderId } });
+
+        if (!order) {
+            return res.status(404).json({ message: "Associated order not found." });
+        }
+
+        const oldDate = assignment.deliveryDate;
+        const targetNewDate = new Date(newDate);
+
+        const updated = await prisma.deliveryAssignment.update({
+            where: { id: assignment.id },
+            data: {
+                deliveryDate: targetNewDate,
+                notes: reason ? `${assignment.notes ? assignment.notes + " | " : ""}Rescheduled: ${reason}` : assignment.notes
+            }
+        });
+
+        await notificationService.notifyDeliveryDateChanged({
+            orderId: assignment.orderId,
+            orderType: assignment.orderType,
+            oldDate,
+            newDate: targetNewDate,
+            boyId: assignment.deliveryBoyId,
+            customerUserId: order.userId,
+            adminId,
+            customerName: order.customerName
+        });
+
+        res.json({
+            message: "Delivery date updated successfully",
+            assignment: updated,
+            oldDate,
+            newDate: targetNewDate
+        });
+    } catch (error) {
+        console.error("Reschedule by order error:", error);
+        res.status(500).json({ message: "Server error", error: error.message });
+    }
+};

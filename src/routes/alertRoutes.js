@@ -3,9 +3,21 @@ const router = express.Router();
 const alertController = require('../controllers/alertController');
 const { authenticateAdmin } = require('../middleware/auth');
 
-router.get('/pending-payments', authenticateAdmin, alertController.getPendingPaymentUsers);
-router.post('/send', authenticateAdmin, alertController.sendAlerts);
-router.get('/my-alerts', authenticateAdmin, alertController.getMyAlerts);
-router.put('/:id/read', authenticateAdmin, alertController.markAsRead);
+router.use(authenticateAdmin);
+
+// Admin-only payment reminder
+router.get('/pending-payments', alertController.getPendingPaymentUsers);
+router.post('/send', alertController.sendAlerts);
+
+// Notification Center & Special Alerts (Role-based for authenticated user)
+router.get('/notifications', alertController.getNotifications);
+router.get('/special-alerts', alertController.getSpecialAlerts);
+router.get('/unread-count', alertController.getUnreadCount);
+router.put('/mark-all-read', alertController.markAllAsRead);
+router.put('/:id/read', alertController.markAsRead);
+router.put('/:id/dismiss', alertController.dismissSpecialAlert);
+
+// Backward-compatible endpoint for existing AlertPopup.jsx
+router.get('/my-alerts', alertController.getMyAlerts);
 
 module.exports = router;

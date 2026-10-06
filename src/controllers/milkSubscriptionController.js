@@ -1,4 +1,5 @@
 const prisma = require('../config/db');
+const notificationService = require('../services/notificationService');
 
 // ========================
 // 1. Milk Pricing Management
@@ -145,6 +146,16 @@ exports.requestTrial = async (req, res) => {
                 productId: req.body.productId ? parseInt(req.body.productId) : null
             }
         });
+
+        // Trigger New Booking Notification
+        notificationService.notifyNewBooking({
+            orderId: trial.id,
+            orderType: 'trial',
+            customerName: trial.customerName,
+            userId: trial.userId,
+            adminId: trial.adminId
+        }).catch(err => console.error('[notifyNewBooking trial error]', err));
+
         res.json({ message: "Trial requested", trial });
     } catch (error) {
         console.error("TRIAL REQUEST ERROR:", error);
@@ -228,6 +239,16 @@ exports.requestSubscription = async (req, res) => {
                 productId: req.body.productId ? parseInt(req.body.productId) : null
             }
         });
+
+        // Trigger New Booking Notification
+        notificationService.notifyNewBooking({
+            orderId: sub.id,
+            orderType: 'sub',
+            customerName: sub.customerName,
+            userId: sub.userId,
+            adminId: sub.adminId
+        }).catch(err => console.error('[notifyNewBooking sub error]', err));
+
         res.json({ message: "Subscription requested", sub });
     } catch (error) {
         console.error("SUBSCRIPTION REQUEST ERROR:", error);
@@ -345,6 +366,14 @@ exports.customerRespondSubscription = async (req, res) => {
                 where: { id: subId },
                 data: { status: 'CANCELLED' }
             });
+            notificationService.notifyDeliveryCancelled({
+                orderId: sub.id,
+                orderType: 'sub',
+                customerUserId: sub.userId,
+                boyId: sub.deliveryBoyId,
+                adminId: sub.adminId,
+                reason: 'Customer declined subscription offer'
+            }).catch(err => console.error('[notifyDeliveryCancelled error]', err));
             return res.json({ message: "Subscription cancelled", updated });
         }
 
