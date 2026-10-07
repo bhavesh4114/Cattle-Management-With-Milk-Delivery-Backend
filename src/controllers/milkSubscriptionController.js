@@ -590,6 +590,7 @@ exports.cancelOrder = async (req, res) => {
                     data: {
                         status: 'CANCELLED',
                         deliveryStatus: 'Cancelled',
+                        deliveryBoyId: null,
                         notes: trial.notes ? `${trial.notes} | Cancelled: ${cancelReason}` : `Cancelled: ${cancelReason}`
                     }
                 });
@@ -605,6 +606,7 @@ exports.cancelOrder = async (req, res) => {
                     orderId: trial.id,
                     orderType: 'trial',
                     customerUserId: trial.userId,
+                    customerName: trial.customerName,
                     boyId: trial.deliveryBoyId,
                     adminId: trial.adminId,
                     reason: cancelReason
@@ -624,6 +626,7 @@ exports.cancelOrder = async (req, res) => {
                     data: {
                         status: 'CANCELLED',
                         deliveryStatus: 'Cancelled',
+                        deliveryBoyId: null,
                         notes: sub.notes ? `${sub.notes} | Cancelled: ${cancelReason}` : `Cancelled: ${cancelReason}`
                     }
                 });
@@ -639,6 +642,7 @@ exports.cancelOrder = async (req, res) => {
                     orderId: sub.id,
                     orderType: 'sub',
                     customerUserId: sub.userId,
+                    customerName: sub.customerName,
                     boyId: sub.deliveryBoyId,
                     adminId: sub.adminId,
                     reason: cancelReason

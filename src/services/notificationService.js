@@ -675,8 +675,22 @@ async function notifyDeliveryFailed({ orderId, orderType, customerUserId, boyId,
   }
 }
 
-async function notifyDeliveryCancelled({ orderId, orderType, customerUserId, boyId, adminId, reason }) {
+async function getAdminUserIds() {
+  try {
+    const admins = await prisma.admin.findMany({
+      where: { role: { in: ['ADMIN', 'SUPER_ADMIN', 'FARM_ADMIN'] } },
+      select: { id: true }
+    });
+    return admins.map(a => a.id);
+  } catch (e) {
+    console.error("[getAdminUserIds error]", e);
+    return [];
+  }
+}
+
+async function notifyDeliveryCancelled({ orderId, orderType, customerUserId, customerName, boyId, adminId, reason }) {
   const reasonText = reason ? `: ${reason}` : ".";
+  const nameLabel = customerName ? ` (${customerName})` : "";
 
   // Customer
   if (customerUserId) {
@@ -684,8 +698,8 @@ async function notifyDeliveryCancelled({ orderId, orderType, customerUserId, boy
       userId: customerUserId,
       role: "USER",
       type: "DELIVERY_CANCELLED",
-      title: "Delivery Cancelled",
-      message: `Your delivery #${orderId} has been cancelled${reasonText}`,
+      title: "Order Cancelled",
+      message: `Your milk order #${orderId} has been cancelled${reasonText}`,
       entityType: "DELIVERY",
       entityId: orderId,
       orderType,
@@ -702,7 +716,7 @@ async function notifyDeliveryCancelled({ orderId, orderType, customerUserId, boy
       role: "DELIVERY_BOY",
       type: "DELIVERY_CANCELLED",
       title: "Delivery Cancelled",
-      message: `Delivery #${orderId} has been cancelled${reasonText}`,
+      message: `Delivery #${orderId} for customer${nameLabel} has been cancelled${reasonText}`,
       entityType: "DELIVERY",
       entityId: orderId,
       orderType,
@@ -719,12 +733,14 @@ async function notifyDeliveryCancelled({ orderId, orderType, customerUserId, boy
       userId: aId,
       role: "ADMIN",
       type: "DELIVERY_CANCELLED",
-      title: "Delivery Cancelled",
-      message: `Delivery #${orderId} has been cancelled${reasonText}`,
+      title: "Order Cancelled by Customer",
+      message: `Customer${nameLabel} has cancelled milk order #${orderId}${reasonText}`,
       entityType: "DELIVERY",
       entityId: orderId,
       orderType,
       orderId,
+      priority: "HIGH",
+      isSpecialAlert: true,
       actionType: "VIEW_DELIVERY",
       actionUrl: "/milk-admin/dashboard?tab=orders"
     });
