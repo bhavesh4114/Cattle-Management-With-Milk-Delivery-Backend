@@ -37,6 +37,11 @@ router.put('/subscription/:id', authenticateAdmin, milkSubscriptionController.ed
 router.post('/subscription/:id/pay', authenticateAdmin, milkSubscriptionController.paySubscription);
 router.post('/subscription/verify-payment', authenticateAdmin, milkSubscriptionController.verifyPayment);
 
+// Cancel Order Routes
+router.post('/order/cancel', authenticateAdmin, milkSubscriptionController.cancelOrder);
+router.post('/trial/:id/cancel', authenticateAdmin, milkSubscriptionController.cancelTrial);
+router.post('/subscription/:id/cancel', authenticateAdmin, milkSubscriptionController.cancelSubscription);
+
 // Advance Milk Quantity & Delivery Skip Requests
 router.use('/delivery-requests', require('./milkDeliveryRequestRoutes'));
 

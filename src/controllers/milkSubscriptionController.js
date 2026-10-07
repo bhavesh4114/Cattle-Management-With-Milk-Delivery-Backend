@@ -554,3 +554,152 @@ exports.getDashboardStats = async (req, res) => {
         res.status(500).json({ message: "Server error", error: error.message });
     }
 };
+
+// ========================
+// 5. Cancel & Delete Order Flow
+// ========================
+
+exports.cancelOrder = async (req, res) => {
+    try {
+        const { orderCategory, ids, id, reason } = req.body;
+        const userId = req.admin ? req.admin.id : null;
+        const isAdmin = req.admin?.role === 'ADMIN';
+
+        const idList = Array.isArray(ids) ? ids : (id ? [id] : []);
+        if (idList.length === 0) {
+            return res.status(400).json({ message: "Order ID is required." });
+        }
+
+        const isTrial = orderCategory === 'trial';
+        const cancelReason = reason || 'Cancelled by customer';
+
+        for (const orderId of idList) {
+            const intId = parseInt(orderId, 10);
+            if (isTrial) {
+                const trial = await prisma.milkTrial.findUnique({ where: { id: intId } });
+                if (!trial) continue;
+                if (!isAdmin && trial.userId && trial.userId !== userId) {
+                    return res.status(403).json({ message: "Unauthorized to cancel this order." });
+                }
+                if (trial.status === 'COMPLETED' || trial.deliveryStatus === 'Delivered') {
+                    return res.status(400).json({ message: "Completed orders cannot be cancelled." });
+                }
+
+                await prisma.milkTrial.update({
+                    where: { id: intId },
+                    data: {
+                        status: 'CANCELLED',
+                        deliveryStatus: 'Cancelled',
+                        notes: trial.notes ? `${trial.notes} | Cancelled: ${cancelReason}` : `Cancelled: ${cancelReason}`
+                    }
+                });
+
+                // Deactivate any active delivery assignments
+                await prisma.deliveryAssignment.updateMany({
+                    where: { orderType: 'trial', orderId: intId, isActive: true },
+                    data: { isActive: false, deliveryStatus: 'Cancelled' }
+                });
+
+                // Notify admin
+                notificationService.notifyDeliveryCancelled({
+                    orderId: trial.id,
+                    orderType: 'trial',
+                    customerUserId: trial.userId,
+                    boyId: trial.deliveryBoyId,
+                    adminId: trial.adminId,
+                    reason: cancelReason
+                }).catch(err => console.error('[notifyDeliveryCancelled trial error]', err));
+            } else {
+                const sub = await prisma.milkSubscription.findUnique({ where: { id: intId } });
+                if (!sub) continue;
+                if (!isAdmin && sub.userId && sub.userId !== userId) {
+                    return res.status(403).json({ message: "Unauthorized to cancel this subscription." });
+                }
+                if (sub.status === 'COMPLETED' || sub.deliveryStatus === 'Delivered') {
+                    return res.status(400).json({ message: "Completed subscriptions cannot be cancelled." });
+                }
+
+                await prisma.milkSubscription.update({
+                    where: { id: intId },
+                    data: {
+                        status: 'CANCELLED',
+                        deliveryStatus: 'Cancelled',
+                        notes: sub.notes ? `${sub.notes} | Cancelled: ${cancelReason}` : `Cancelled: ${cancelReason}`
+                    }
+                });
+
+                // Deactivate any active delivery assignments
+                await prisma.deliveryAssignment.updateMany({
+                    where: { orderType: 'sub', orderId: intId, isActive: true },
+                    data: { isActive: false, deliveryStatus: 'Cancelled' }
+                });
+
+                // Notify admin
+                notificationService.notifyDeliveryCancelled({
+                    orderId: sub.id,
+                    orderType: 'sub',
+                    customerUserId: sub.userId,
+                    boyId: sub.deliveryBoyId,
+                    adminId: sub.adminId,
+                    reason: cancelReason
+                }).catch(err => console.error('[notifyDeliveryCancelled sub error]', err));
+            }
+        }
+
+        res.json({ message: "Order cancelled successfully." });
+    } catch (error) {
+        console.error("[cancelOrder error]", error);
+        res.status(500).json({ message: "Server error", error: error.message });
+    }
+};
+
+exports.cancelTrial = async (req, res) => {
+    req.body = { ...req.body, orderCategory: 'trial', ids: [req.params.id] };
+    return exports.cancelOrder(req, res);
+};
+
+exports.cancelSubscription = async (req, res) => {
+    req.body = { ...req.body, orderCategory: 'subscription', ids: [req.params.id] };
+    return exports.cancelOrder(req, res);
+};
+
+exports.deleteTrial = async (req, res) => {
+    try {
+        const id = parseInt(req.params.id, 10);
+        const userId = req.admin ? req.admin.id : null;
+        const isAdmin = req.admin?.role === 'ADMIN';
+
+        const trial = await prisma.milkTrial.findUnique({ where: { id } });
+        if (!trial) return res.status(404).json({ message: "Order not found" });
+        if (!isAdmin && trial.userId && trial.userId !== userId) {
+            return res.status(403).json({ message: "Unauthorized" });
+        }
+
+        await prisma.deliveryAssignment.deleteMany({ where: { orderType: 'trial', orderId: id } });
+        await prisma.milkTrial.delete({ where: { id } });
+        res.json({ message: "Order deleted successfully" });
+    } catch (error) {
+        res.status(500).json({ message: "Server error", error: error.message });
+    }
+};
+
+exports.deleteSubscription = async (req, res) => {
+    try {
+        const id = parseInt(req.params.id, 10);
+        const userId = req.admin ? req.admin.id : null;
+        const isAdmin = req.admin?.role === 'ADMIN';
+
+        const sub = await prisma.milkSubscription.findUnique({ where: { id } });
+        if (!sub) return res.status(404).json({ message: "Subscription not found" });
+        if (!isAdmin && sub.userId && sub.userId !== userId) {
+            return res.status(403).json({ message: "Unauthorized" });
+        }
+
+        await prisma.deliveryAssignment.deleteMany({ where: { orderType: 'sub', orderId: id } });
+        await prisma.milkPayment.deleteMany({ where: { subscriptionId: id } });
+        await prisma.milkSubscription.delete({ where: { id } });
+        res.json({ message: "Subscription deleted successfully" });
+    } catch (error) {
+        res.status(500).json({ message: "Server error", error: error.message });
+    }
+};
