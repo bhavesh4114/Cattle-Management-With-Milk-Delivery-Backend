@@ -18,7 +18,9 @@ router.get('/special-alerts', alertController.getSpecialAlerts);
 router.get('/unread-count', alertController.getUnreadCount);
 router.put('/mark-all-read', alertController.markAllAsRead);
 router.put('/:id/read', alertController.markAsRead);
+router.patch('/:id/read', alertController.markAsRead);
 router.put('/:id/dismiss', alertController.dismissSpecialAlert);
+router.patch('/:id/dismiss', alertController.dismissSpecialAlert);
 
 // Backward-compatible endpoint for existing AlertPopup.jsx
 router.get('/my-alerts', alertController.getMyAlerts);

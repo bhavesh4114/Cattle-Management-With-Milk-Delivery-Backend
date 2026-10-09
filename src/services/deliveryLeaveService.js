@@ -36,11 +36,11 @@ async function applyLeave(deliveryBoyId, { startDate, endDate, reason }) {
     throw new Error("End date cannot be earlier than start date.");
   }
 
-  // 2-day advance validation rule:
-  // e.g. Today Oct 6 -> Oct 9 allowed (diff 3), Oct 8 not allowed (diff 2), Oct 7 not allowed (diff 1)
+  // 1-day advance validation rule:
+  // e.g. Today Oct 8 -> Oct 9 allowed (diff 1), Oct 8 not allowed (diff 0)
   const advanceDays = getDayDiff(startUtc, nowUtc);
-  if (advanceDays < 3) {
-    throw new Error("Leave must be applied at least 2 days in advance.");
+  if (advanceDays < 1) {
+    throw new Error("Leave must be applied at least 1 day in advance.");
   }
 
   // Verify delivery boy exists & active

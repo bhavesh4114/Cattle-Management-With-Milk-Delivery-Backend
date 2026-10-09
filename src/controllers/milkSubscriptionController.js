@@ -1,5 +1,6 @@
 const prisma = require('../config/db');
 const notificationService = require('../services/notificationService');
+const deliveryAutoAssignService = require('../services/deliveryAutoAssignService');
 
 // ========================
 // 1. Milk Pricing Management
@@ -124,17 +125,23 @@ exports.requestTrial = async (req, res) => {
     try {
         const { customerName, phone, address, pincode, milkType, dailyQuantity, startDate, endDate, notes } = req.body;
         const userId = req.admin ? req.admin.id : null;
+        const finalCustomerName = (req.admin && req.admin.role === 'CUSTOM' && req.admin.name)
+            ? req.admin.name
+            : (customerName || req.admin?.name || 'Customer');
         
         // Find main admin
         let mainAdmin = await prisma.admin.findFirst({ where: { role: 'ADMIN' } });
         if (!mainAdmin) mainAdmin = await prisma.admin.findFirst();
         if (!mainAdmin) throw new Error("No admin account available in the system.");
 
+        // Automatically find best delivery boy matching pincode (or fallback to active available boy)
+        const bestBoy = await deliveryAutoAssignService.findBestDeliveryBoy(pincode);
+
         const trial = await prisma.milkTrial.create({
             data: {
                 adminId: mainAdmin.id,
                 userId,
-                customerName,
+                customerName: finalCustomerName,
                 phone,
                 address,
                 pincode,
@@ -143,9 +150,17 @@ exports.requestTrial = async (req, res) => {
                 startDate: new Date(startDate),
                 endDate: new Date(endDate),
                 notes,
+                status: 'ACTIVE',
+                deliveryBoyId: bestBoy ? bestBoy.id : null,
+                deliveryStatus: bestBoy ? 'Assigned' : 'Pending',
                 productId: req.body.productId ? parseInt(req.body.productId) : null
             }
         });
+
+        // Auto-assign and create active delivery assignment for the delivery boy
+        if (bestBoy) {
+            await deliveryAutoAssignService.autoAssignTrial(trial, mainAdmin.id);
+        }
 
         // Trigger New Booking Notification
         notificationService.notifyNewBooking({
@@ -156,7 +171,7 @@ exports.requestTrial = async (req, res) => {
             adminId: trial.adminId
         }).catch(err => console.error('[notifyNewBooking trial error]', err));
 
-        res.json({ message: "Trial requested", trial });
+        res.json({ message: "Trial requested and assigned", trial });
     } catch (error) {
         console.error("TRIAL REQUEST ERROR:", error);
         require('fs').appendFileSync('error.log', '\nTRIAL ERROR: ' + error.stack);
@@ -219,15 +234,21 @@ exports.requestSubscription = async (req, res) => {
     try {
         const { customerName, phone, address, pincode, milkType, dailyQuantity, startDate, endDate, notes } = req.body;
         const userId = req.admin ? req.admin.id : null;
+        const finalCustomerName = (req.admin && req.admin.role === 'CUSTOM' && req.admin.name)
+            ? req.admin.name
+            : (customerName || req.admin?.name || 'Customer');
         let mainAdmin = await prisma.admin.findFirst({ where: { role: 'ADMIN' } });
         if (!mainAdmin) mainAdmin = await prisma.admin.findFirst();
         if (!mainAdmin) throw new Error("No admin account available in the system.");
+
+        // Automatically find best delivery boy matching pincode (or fallback)
+        const bestBoy = await deliveryAutoAssignService.findBestDeliveryBoy(pincode);
 
         const sub = await prisma.milkSubscription.create({
             data: {
                 adminId: mainAdmin.id,
                 userId,
-                customerName,
+                customerName: finalCustomerName,
                 phone,
                 address,
                 pincode,
@@ -236,6 +257,8 @@ exports.requestSubscription = async (req, res) => {
                 requestedStartDate: new Date(startDate),
                 requestedEndDate: new Date(endDate),
                 notes,
+                deliveryBoyId: bestBoy ? bestBoy.id : null,
+                deliveryStatus: bestBoy ? 'Assigned' : 'Pending',
                 productId: req.body.productId ? parseInt(req.body.productId) : null
             }
         });
@@ -262,7 +285,10 @@ exports.getAllSubscriptions = async (req, res) => {
         const adminId = req.admin.id;
         const subs = await prisma.milkSubscription.findMany({ 
             where: { adminId },
-            include: { product: true },
+            include: { 
+                product: true,
+                payments: { orderBy: { createdAt: 'desc' } }
+            },
             orderBy: { createdAt: 'desc' }
         });
         res.json(subs);
@@ -276,7 +302,10 @@ exports.getMySubscriptions = async (req, res) => {
         const userId = req.admin.id;
         const subs = await prisma.milkSubscription.findMany({ 
             where: { userId },
-            include: { product: true },
+            include: { 
+                product: true,
+                payments: { orderBy: { createdAt: 'desc' } }
+            },
             orderBy: { createdAt: 'desc' }
         });
         res.json(subs);
@@ -400,24 +429,58 @@ exports.customerRespondSubscription = async (req, res) => {
 exports.paySubscription = async (req, res) => {
     try {
         const subId = parseInt(req.params.id);
-        const { method } = req.body; // 'ONLINE' or 'CASH'
+        const { method, amount, paymentType, daysCount, notes } = req.body; // 'ONLINE' or 'CASH'
+
+        const sub = await prisma.milkSubscription.findUnique({
+            where: { id: subId },
+            include: { payments: true }
+        });
+        if (!sub) return res.status(404).json({ message: "Subscription not found" });
+
+        const payAmount = amount ? parseFloat(amount) : (sub.totalAmount || 0);
 
         if (method === 'CASH') {
-            const sub = await prisma.milkSubscription.update({
-                where: { id: subId },
-                data: { paymentMethod: 'Cash', paymentStatus: 'CASH_PENDING', status: 'ACTIVE' }
-            });
             await prisma.milkPayment.create({
-                data: { subscriptionId: subId, amount: sub.totalAmount, paymentMethod: 'Cash', paymentStatus: 'CASH_PENDING' }
+                data: {
+                    subscriptionId: subId,
+                    amount: payAmount,
+                    paymentMethod: 'Cash',
+                    paymentStatus: 'CASH_PENDING',
+                    transactionId: `CASH_${paymentType || 'FLEX'}_${Date.now()}`
+                }
             });
-            return res.json({ message: "Cash payment recorded. Subscription active.", sub });
+
+            const allPayments = await prisma.milkPayment.findMany({ where: { subscriptionId: subId } });
+            const totalPaid = allPayments
+                .filter(p => ['PAID', 'SUCCESS'].includes(p.paymentStatus))
+                .reduce((s, p) => s + (p.amount || 0), 0);
+
+            const isFullyPaid = totalPaid >= (sub.totalAmount || 0);
+            const updated = await prisma.milkSubscription.update({
+                where: { id: subId },
+                data: {
+                    paymentMethod: 'Cash',
+                    paymentStatus: isFullyPaid ? 'PAID' : (totalPaid > 0 ? 'PARTIALLY_PAID' : 'CASH_PENDING'),
+                    status: 'ACTIVE'
+                },
+                include: { product: true, payments: true }
+            });
+
+            // Auto-assign and create today's delivery assignment for delivery boy
+            await deliveryAutoAssignService.autoAssignSubscription(updated, sub.adminId);
+            return res.json({ message: `Cash payment request of Rs. ${payAmount} recorded.`, sub: updated });
         } else if (method === 'ONLINE') {
             // Mock payment processing logic here (In real app, integrate Razorpay/Stripe)
-            const sub = await prisma.milkSubscription.update({
+            const updated = await prisma.milkSubscription.update({
                 where: { id: subId },
                 data: { paymentMethod: 'Online', paymentStatus: 'PAYMENT_PROCESSING' }
             });
-            return res.json({ message: "Redirect to payment gateway", sub, orderId: `MOCK_ORDER_${Date.now()}` });
+            return res.json({
+                message: "Proceeding to online payment",
+                sub: updated,
+                amount: payAmount,
+                orderId: `MOCK_ORDER_${Date.now()}`
+            });
         }
     } catch (error) {
         res.status(500).json({ message: "Server error", error: error.message });
@@ -426,28 +489,56 @@ exports.paySubscription = async (req, res) => {
 
 exports.verifyPayment = async (req, res) => {
     try {
-        const { subscriptionId, transactionId, status } = req.body; // status: 'SUCCESS' or 'FAILED'
-        
-        const sub = await prisma.milkSubscription.findUnique({ where: { id: parseInt(subscriptionId) } });
+        const { subscriptionId, transactionId, status, amount, paymentType } = req.body; // status: 'SUCCESS' or 'FAILED'
+        const subId = parseInt(subscriptionId);
+        const sub = await prisma.milkSubscription.findUnique({
+            where: { id: subId },
+            include: { payments: true }
+        });
+        if (!sub) return res.status(404).json({ message: "Subscription not found" });
+
+        const payAmount = amount ? parseFloat(amount) : (sub.totalAmount || 0);
 
         if (status === 'SUCCESS') {
-            const updated = await prisma.milkSubscription.update({
-                where: { id: parseInt(subscriptionId) },
-                data: { paymentStatus: 'PAID', status: 'ACTIVE' }
-            });
             await prisma.milkPayment.create({
-                data: { subscriptionId: parseInt(subscriptionId), amount: sub.totalAmount, paymentMethod: 'Online', paymentStatus: 'PAID', transactionId, verifiedAt: new Date() }
+                data: {
+                    subscriptionId: subId,
+                    amount: payAmount,
+                    paymentMethod: 'Online',
+                    paymentStatus: 'PAID',
+                    transactionId: transactionId || `TXN_${Date.now()}`,
+                    verifiedAt: new Date()
+                }
             });
-            return res.json({ message: "Payment successful. Subscription active.", updated });
+
+            const allPayments = await prisma.milkPayment.findMany({ where: { subscriptionId: subId } });
+            const totalPaid = allPayments
+                .filter(p => ['PAID', 'SUCCESS'].includes(p.paymentStatus))
+                .reduce((s, p) => s + (p.amount || 0), 0);
+
+            const isFullyPaid = totalPaid >= (sub.totalAmount || 0);
+            const updated = await prisma.milkSubscription.update({
+                where: { id: subId },
+                data: {
+                    paymentStatus: isFullyPaid ? 'PAID' : 'PARTIALLY_PAID',
+                    status: 'ACTIVE'
+                },
+                include: { product: true, payments: true }
+            });
+
+            await deliveryAutoAssignService.autoAssignSubscription(updated, sub.adminId);
+            return res.json({ message: `Payment of Rs. ${payAmount} successful.`, updated, totalPaid });
         } else {
-            const updated = await prisma.milkSubscription.update({
-                where: { id: parseInt(subscriptionId) },
-                data: { paymentStatus: 'FAILED' }
-            });
             await prisma.milkPayment.create({
-                data: { subscriptionId: parseInt(subscriptionId), amount: sub.totalAmount, paymentMethod: 'Online', paymentStatus: 'FAILED', transactionId }
+                data: {
+                    subscriptionId: subId,
+                    amount: payAmount,
+                    paymentMethod: 'Online',
+                    paymentStatus: 'FAILED',
+                    transactionId
+                }
             });
-            return res.json({ message: "Payment failed.", updated });
+            return res.json({ message: "Payment failed.", sub });
         }
     } catch (error) {
         res.status(500).json({ message: "Server error", error: error.message });

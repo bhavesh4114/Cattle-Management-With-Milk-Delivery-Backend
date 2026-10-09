@@ -364,6 +364,10 @@ async function notifyDeliveryAssigned({
   customerUserId,
   adminId,
   deliveryDate,
+  productName,
+  quantity,
+  unit,
+  customerAddress,
   isReassignment = false,
   previousBoyName = null
 }) {
@@ -371,9 +375,13 @@ async function notifyDeliveryAssigned({
 
   // 1. Delivery Boy Notification
   const boyTitle = isReassignment ? "Delivery Reassigned" : "New Delivery Assigned";
+  let detailsText = '';
+  if (customerName || productName || customerAddress) {
+    detailsText = `\nCustomer: ${customerName || 'Customer'}\nProduct: ${productName || 'Milk'} (${quantity || 1} ${unit || 'L'})\nDelivery Date: ${dateStr}\nAddress: ${customerAddress || 'Customer Address'}`;
+  }
   const boyMsg = isReassignment
-    ? `Delivery #${orderId} has been reassigned to you due to another Delivery Boy's leave.`
-    : `Delivery #${orderId} has been assigned to you for ${dateStr}.`;
+    ? `Delivery #${orderId} has been reassigned to you due to another Delivery Boy's leave.${detailsText}`
+    : `New delivery assigned to you.${detailsText}`;
 
   await createNotification({
     userId: boyId,
@@ -396,7 +404,7 @@ async function notifyDeliveryAssigned({
       role: "USER",
       type: "DELIVERY_ASSIGNED",
       title: "Delivery Boy Assigned",
-      message: `A Delivery Boy has been assigned to your delivery #${orderId}.`,
+      message: `A Delivery Boy (${boyName || 'Partner'}) has been assigned to your delivery #${orderId}.`,
       entityType: "DELIVERY",
       entityId: orderId,
       orderType,
@@ -553,32 +561,72 @@ async function notifyOutForDelivery({ orderId, orderType, customerUserId, boyId,
       role: "USER",
       type: "DELIVERY_OUT_FOR_DELIVERY",
       title: "Out for Delivery",
-      message: `Your delivery #${orderId} is out for delivery today.`,
+      message: `🚚 Your delivery is on the way. Your product has been collected and the delivery boy has started the delivery.`,
       entityType: "DELIVERY",
       entityId: orderId,
       orderType,
       orderId,
-      actionType: "VIEW_DELIVERY",
+      actionType: "TRACK_DELIVERY",
+      actionUrl: "/admin/products?tab=track"
+    });
+  }
+}
+
+async function notifyDeliveryArrived({ orderId, orderType, customerUserId, boyId, adminId }) {
+  if (customerUserId) {
+    await createNotification({
+      userId: customerUserId,
+      role: "USER",
+      type: "DELIVERY_ARRIVED",
+      title: "Delivery Boy Arrived",
+      message: `📍 Your delivery boy has arrived at your location.`,
+      entityType: "DELIVERY",
+      entityId: orderId,
+      orderType,
+      orderId,
+      actionType: "TRACK_DELIVERY",
+      actionUrl: "/admin/products?tab=track"
+    });
+  }
+}
+
+async function notifyDeliveryHandoverPending({ orderId, orderType, customerUserId, boyId, adminId }) {
+  if (customerUserId) {
+    await createNotification({
+      userId: customerUserId,
+      role: "USER",
+      type: "DELIVERY_CONFIRMATION",
+      title: "Confirm Delivery Received",
+      message: `🥛 Your delivery has been handed over by the delivery boy. Please confirm that you received your delivery.`,
+      entityType: "DELIVERY",
+      entityId: orderId,
+      orderType,
+      orderId,
+      isSpecialAlert: true,
+      priority: "HIGH",
+      actionType: "CONFIRM_DELIVERY",
       actionUrl: "/admin/products"
     });
   }
 }
 
-async function notifyDeliveryCompleted({ orderId, orderType, customerUserId, boyId, boyName, adminId }) {
+async function notifyDeliveryCompleted({ orderId, orderType, customerUserId, customerName, boyId, boyName, adminId }) {
+  const custName = customerName || "Customer";
+
   // 1. Customer Notification
   if (customerUserId) {
     await createNotification({
       userId: customerUserId,
       role: "USER",
       type: "DELIVERY_COMPLETED",
-      title: "Delivery Completed",
-      message: `Your delivery #${orderId} has been successfully delivered.`,
+      title: "Delivery Confirmed",
+      message: `Your delivery #${orderId} has been successfully completed and confirmed. Thank you!`,
       entityType: "DELIVERY",
       entityId: orderId,
       orderType,
       orderId,
       actionType: "VIEW_DELIVERY",
-      actionUrl: "/admin/products"
+      actionUrl: "/admin/products?tab=track"
     });
   }
 
@@ -587,14 +635,14 @@ async function notifyDeliveryCompleted({ orderId, orderType, customerUserId, boy
     await createNotification({
       userId: boyId,
       role: "DELIVERY_BOY",
-      type: "DELIVERY_COMPLETED",
-      title: "Delivery Completed",
-      message: `Delivery #${orderId} has been marked as completed.`,
+      type: "DELIVERY_CONFIRMED_BY_USER",
+      title: "Delivery Confirmed by Customer",
+      message: `Delivery #${orderId} has been confirmed as received by ${custName}.`,
       entityType: "DELIVERY",
       entityId: orderId,
       orderType,
       orderId,
-      actionType: "VIEW_DELIVERY",
+      actionType: "VIEW_DELIVERIES",
       actionUrl: "/milk-admin/dashboard?tab=my-deliveries"
     });
   }
@@ -605,9 +653,9 @@ async function notifyDeliveryCompleted({ orderId, orderType, customerUserId, boy
     await createNotification({
       userId: aId,
       role: "ADMIN",
-      type: "DELIVERY_COMPLETED",
-      title: "Delivery Completed",
-      message: `Delivery #${orderId} has been completed by ${boyName || "Delivery Boy"}.`,
+      type: "DELIVERY_COMPLETED_ADMIN",
+      title: "Delivery Confirmed by Customer",
+      message: `Order #${orderId} (${custName}) has been confirmed as received by customer. Delivered by ${boyName || "Delivery Boy"}.`,
       entityType: "DELIVERY",
       entityId: orderId,
       orderType,
@@ -789,6 +837,45 @@ async function notifyDeliveryIssue({ orderId, orderType, customerUserId, boyId, 
   }
 }
 
+async function notifyExtraDeliveryOffered({ customerUserId, requestId, requestedQty, offeredQty, productName }) {
+  if (customerUserId) {
+    const isPartial = offeredQty < requestedQty;
+    const msg = isPartial
+      ? `Only ${offeredQty} L is available for your requested ${requestedQty} L. Please confirm.`
+      : `Admin offered ${offeredQty} L for your requested ${requestedQty} L Extra Delivery. Please confirm.`;
+    await createNotification({
+      userId: customerUserId,
+      role: "USER",
+      type: "EXTRA_DELIVERY_OFFER",
+      title: "Extra Delivery Quantity Offer",
+      message: msg,
+      entityType: "MilkDeliveryRequest",
+      entityId: requestId,
+      priority: "HIGH",
+      isSpecialAlert: true,
+      actionType: "VIEW_DELIVERY_REQUESTS",
+      actionUrl: "/admin/products"
+    });
+  }
+}
+
+async function notifyExtraDeliveryAccepted({ customerUserId, requestId, acceptedQty }) {
+  if (customerUserId) {
+    await createNotification({
+      userId: customerUserId,
+      role: "USER",
+      type: "EXTRA_DELIVERY_ACCEPTED",
+      title: "Extra Delivery Accepted",
+      message: `Your ${acceptedQty} L Extra Delivery has been accepted.`,
+      entityType: "MilkDeliveryRequest",
+      entityId: requestId,
+      priority: "NORMAL",
+      actionType: "VIEW_DELIVERY_REQUESTS",
+      actionUrl: "/admin/products"
+    });
+  }
+}
+
 module.exports = {
   createNotification,
   formatDate,
@@ -800,8 +887,12 @@ module.exports = {
   notifyDeliveryAssigned,
   notifyDeliveryDateChanged,
   notifyOutForDelivery,
+  notifyDeliveryArrived,
+  notifyDeliveryHandoverPending,
   notifyDeliveryCompleted,
   notifyDeliveryFailed,
   notifyDeliveryCancelled,
-  notifyDeliveryIssue
+  notifyDeliveryIssue,
+  notifyExtraDeliveryOffered,
+  notifyExtraDeliveryAccepted
 };

@@ -10,8 +10,8 @@
     "prisma:deploy": "prisma migrate deploy",
     "prisma:migrate": "prisma migrate dev",
     "prisma:seed": "node prisma/seed.js",
-    "db:start": "pg_ctl -D ../.pgdata start",
-    "db:stop": "pg_ctl -D ../.pgdata stop",
+    "db:start": "C:\\PROGRA~1\\PostgreSQL\\18\\bin\\pg_ctl.exe -D ../.pgdata start",
+    "db:stop": "C:\\PROGRA~1\\PostgreSQL\\18\\bin\\pg_ctl.exe -D ../.pgdata stop",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [],

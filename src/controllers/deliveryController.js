@@ -2,6 +2,7 @@ const prisma = require('../config/db');
 const deliveryLeaveService = require('../services/deliveryLeaveService');
 const notificationService = require('../services/notificationService');
 const milkReqService = require('../services/milkDeliveryRequestService');
+const deliveryAutoAssignService = require('../services/deliveryAutoAssignService');
 
 function haversine(lat1, lon1, lat2, lon2) {
     const R = 6371;
@@ -217,14 +218,27 @@ exports.assignDelivery = async (req, res) => {
                 deliveryBoyName: boy?.name });
         }
         await prisma.deliveryAssignment.updateMany({ where: { orderType, orderId: orderIdInt, isActive: true }, data: { isActive: false } });
+        const now = new Date();
         const assignment = await prisma.deliveryAssignment.create({
-            data: { orderType, orderId: orderIdInt, deliveryBoyId: boyId, assignedById: adminId, deliveryStatus: 'Assigned', notes: notes||null, isActive: true, deliveryDate: todayMidnight() }
+            data: {
+                orderType,
+                orderId: orderIdInt,
+                deliveryBoyId: boyId,
+                assignedById: adminId,
+                deliveryStatus: 'ASSIGNED',
+                notes: notes||null,
+                isActive: true,
+                deliveryDate: todayMidnight(),
+                assignedAt: now
+            }
         });
-        if (orderType === 'trial') { await prisma.milkTrial.update({ where: { id: orderIdInt }, data: { deliveryBoyId: boyId, deliveryStatus: 'Assigned' } }); }
-        else { await prisma.milkSubscription.update({ where: { id: orderIdInt }, data: { deliveryBoyId: boyId, deliveryStatus: 'Assigned' } }); }
+        if (orderType === 'trial') { await prisma.milkTrial.update({ where: { id: orderIdInt }, data: { deliveryBoyId: boyId, deliveryStatus: 'ASSIGNED' } }); }
+        else { await prisma.milkSubscription.update({ where: { id: orderIdInt }, data: { deliveryBoyId: boyId, deliveryStatus: 'ASSIGNED' } }); }
 
         // Trigger Role-Based Delivery Assigned Notification
         const boyUser = await prisma.admin.findUnique({ where: { id: boyId }, select: { name: true } });
+        const productInfo = order.product?.name || order.milkType || 'Milk';
+        const fullAddress = order.pincode ? `${order.address} (${order.pincode})` : order.address;
         notificationService.notifyDeliveryAssigned({
             boyId,
             boyName: boyUser?.name,
@@ -234,6 +248,10 @@ exports.assignDelivery = async (req, res) => {
             customerUserId: order.userId,
             adminId,
             deliveryDate: todayMidnight(),
+            productName: productInfo,
+            quantity: order.dailyQuantity,
+            unit: order.product?.unit || 'L',
+            customerAddress: fullAddress,
             isReassignment: false
         }).catch(err => console.error('[assignDelivery notification error]', err));
 
@@ -257,6 +275,10 @@ exports.getMyDeliveries = async (req, res) => {
     try {
         const deliveryBoyId = req.admin.id;
         const isAdmin = req.admin.role === 'ADMIN';
+
+        // Automatically ensure today's delivery assignments exist for all active subscriptions / ongoing trials
+        await deliveryAutoAssignService.ensureDailyAssignments(isAdmin ? null : deliveryBoyId);
+
         const { filter } = req.query;
         const where = {};
         if (!isAdmin) {
@@ -265,13 +287,13 @@ exports.getMyDeliveries = async (req, res) => {
 
         if (filter === 'active') {
             where.isActive = true;
-            where.deliveryStatus = { not: 'Delivered' };
+            where.deliveryStatus = { notIn: ['Delivered', 'DELIVERED'] };
         } else if (filter === 'completed') {
-            where.deliveryStatus = 'Delivered';
+            where.deliveryStatus = { in: ['Delivered', 'DELIVERED'] };
         } else {
             where.OR = [
                 { isActive: true },
-                { deliveryStatus: 'Delivered' }
+                { deliveryStatus: { in: ['Delivered', 'DELIVERED'] } }
             ];
         }
 
@@ -279,10 +301,58 @@ exports.getMyDeliveries = async (req, res) => {
             where, orderBy: { createdAt: 'desc' }
         });
         const enriched = await Promise.all(assignments.map(async (a) => {
-            let order = a.orderType === 'trial'
-                ? await prisma.milkTrial.findUnique({ where: { id: a.orderId }, include: { product: true } })
-                : await prisma.milkSubscription.findUnique({ where: { id: a.orderId }, include: { product: true } });
+            let order = null;
+            if (a.orderType === 'trial') {
+                order = await prisma.milkTrial.findUnique({ where: { id: a.orderId }, include: { product: true } });
+            } else if (a.orderType === 'extra') {
+                const req = await prisma.milkDeliveryRequest.findUnique({
+                    where: { id: a.orderId },
+                    include: { customer: true, subscription: { include: { product: true } } }
+                });
+                if (req) {
+                    const exactAccepted = req.acceptedQuantity !== null && req.acceptedQuantity !== undefined ? req.acceptedQuantity : req.extraQuantity;
+                    order = {
+                        id: req.id,
+                        orderCategory: 'extra',
+                        customerName: req.customer?.name || 'Customer',
+                        phone: req.subscription?.phone || '',
+                        address: req.subscription?.address || '',
+                        pincode: req.subscription?.pincode || '',
+                        milkType: req.subscription?.product?.name || req.subscription?.milkType || 'Milk',
+                        dailyQuantity: exactAccepted, // Delivery boy sees ONLY accepted quantity!
+                        product: req.subscription?.product,
+                        userId: req.customerId,
+                        deliveryStatus: a.deliveryStatus,
+                        deliveryDate: req.deliveryDate,
+                        isExtraDelivery: true,
+                        acceptedQuantity: exactAccepted
+                    };
+                }
+            } else {
+                order = await prisma.milkSubscription.findUnique({ where: { id: a.orderId }, include: { product: true } });
+            }
             if (!order) return { ...a, order: null };
+
+            if (a.orderType === 'extra') {
+                const exactAccepted = order.dailyQuantity;
+                return {
+                    ...a,
+                    order,
+                    deliveryRequest: {
+                        id: order.id,
+                        requestType: 'EXTRA_MILK',
+                        extraQuantity: exactAccepted,
+                        totalQuantity: exactAccepted,
+                        status: a.deliveryStatus,
+                        note: 'Extra Delivery'
+                    },
+                    effectiveQuantity: exactAccepted,
+                    isSkipped: false,
+                    hasExtraMilk: true,
+                    extraQuantity: exactAccepted,
+                    deliveryNoteTag: `Extra Delivery (${exactAccepted}L)`
+                };
+            }
 
             // Check if customer has an approved request for this delivery date
             const deliveryDate = a.deliveryDate || new Date();
@@ -301,9 +371,10 @@ exports.getMyDeliveries = async (req, res) => {
                     deliveryNoteTag = 'SKIPPED – Customer Not At Home';
                 } else if (approvedReq.requestType === 'EXTRA_MILK') {
                     hasExtraMilk = true;
-                    extraQuantity = approvedReq.extraQuantity;
-                    effectiveQuantity = (order.dailyQuantity || 0) + approvedReq.extraQuantity;
-                    deliveryNoteTag = `Extra Milk (+${approvedReq.extraQuantity}L)`;
+                    const acceptedExtra = approvedReq.acceptedQuantity !== null && approvedReq.acceptedQuantity !== undefined ? approvedReq.acceptedQuantity : approvedReq.extraQuantity;
+                    extraQuantity = acceptedExtra;
+                    effectiveQuantity = (order.dailyQuantity || 0) + acceptedExtra;
+                    deliveryNoteTag = `Extra Milk (+${acceptedExtra}L)`;
                 }
             }
 
@@ -332,7 +403,7 @@ exports.getMyDeliveries = async (req, res) => {
 exports.updateDeliveryStatus = async (req, res) => {
     try {
         const { assignmentId } = req.params;
-        const { deliveryStatus, notes } = req.body;
+        const { deliveryStatus, notes, latitude, longitude } = req.body;
         const deliveryBoyId = req.admin.id;
         const isAdmin = req.admin.role === 'ADMIN';
 
@@ -347,50 +418,131 @@ exports.updateDeliveryStatus = async (req, res) => {
         const assignment = await prisma.deliveryAssignment.findFirst({ where });
         if (!assignment) return res.status(404).json({ message: 'Assignment not found' });
 
+        // Update Delivery Boy location if provided
+        if (latitude !== undefined && longitude !== undefined) {
+            const lat = parseFloat(latitude);
+            const lng = parseFloat(longitude);
+            if (!isNaN(lat) && !isNaN(lng)) {
+                await prisma.deliveryBoyProfile.upsert({
+                    where: { adminId: deliveryBoyId },
+                    update: { latitude: lat, longitude: lng },
+                    create: { adminId: deliveryBoyId, latitude: lat, longitude: lng }
+                }).catch(err => console.error('[updateDeliveryBoyProfile loc err]', err));
+            }
+        }
+
+        const normTarget = (deliveryStatus || '').toUpperCase().replace(/ /g, '_');
+        const now = new Date();
+
+        // Direct marking as DELIVERED via this endpoint is strictly disallowed
+        if (normTarget === 'DELIVERED') {
+            return res.status(400).json({
+                message: 'Direct marking as Delivered is not allowed. Customer must confirm receipt.'
+            });
+        }
+
         let extraData = {
             deliveryStatus,
             notes: notes || assignment.notes,
-            isActive: deliveryStatus !== 'Rejected'
+            isActive: normTarget !== 'REJECTED'
         };
 
-        const updated = await prisma.deliveryAssignment.update({ where: { id }, data: extraData });
-        if (assignment.orderType === 'trial') { await prisma.milkTrial.update({ where: { id: assignment.orderId }, data: { deliveryStatus } }); }
-        else { await prisma.milkSubscription.update({ where: { id: assignment.orderId }, data: { deliveryStatus } }); }
-        if (deliveryStatus === 'Rejected') { await prisma.deliveryAssignment.update({ where: { id }, data: { isActive: false } }); }
+        // Enforce Sequential Lifecycle Gates and Record Timestamps
+        if (normTarget === 'PRODUCT_COLLECTED') {
+            extraData.productCollectedAt = assignment.productCollectedAt || now;
+            extraData.deliveryStatus = 'PRODUCT_COLLECTED';
+        } else if (normTarget === 'OUT_FOR_DELIVERY') {
+            // Must have collected product first
+            if (!assignment.productCollectedAt && assignment.deliveryStatus !== 'PRODUCT_COLLECTED') {
+                return res.status(400).json({
+                    message: 'Cannot start delivery before product is collected from farm/store.'
+                });
+            }
+            extraData.outForDeliveryAt = assignment.outForDeliveryAt || now;
+            extraData.deliveryStatus = 'OUT_FOR_DELIVERY';
+        } else if (normTarget === 'ARRIVED') {
+            // Must have been out for delivery first
+            if (!assignment.outForDeliveryAt && !['OUT_FOR_DELIVERY', 'Out for Delivery'].includes(assignment.deliveryStatus)) {
+                return res.status(400).json({
+                    message: 'Cannot mark arrived before starting delivery.'
+                });
+            }
+            extraData.arrivedAt = assignment.arrivedAt || now;
+            extraData.deliveryStatus = 'ARRIVED';
+        } else if (normTarget === 'DELIVERY_PENDING_CUSTOMER_CONFIRMATION' || normTarget === 'AWAITING_USER_CONFIRMATION') {
+            // Must have arrived first
+            if (!assignment.arrivedAt && assignment.deliveryStatus !== 'ARRIVED') {
+                return res.status(400).json({
+                    message: 'Cannot confirm handover before arriving at customer location.'
+                });
+            }
+            extraData.deliveryConfirmedAt = assignment.deliveryConfirmedAt || now;
+            extraData.deliveryStatus = 'DELIVERY_PENDING_CUSTOMER_CONFIRMATION';
+        } else if (normTarget === 'REJECTED') {
+            extraData.isActive = false;
+        }
 
-        // Trigger notifications based on status
+        const updated = await prisma.deliveryAssignment.update({ where: { id }, data: extraData });
+        const finalStatus = extraData.deliveryStatus;
+
+        if (assignment.orderType === 'trial') {
+            await prisma.milkTrial.update({ where: { id: assignment.orderId }, data: { deliveryStatus: finalStatus } });
+        } else if (assignment.orderType === 'extra') {
+            await prisma.milkDeliveryRequest.update({ where: { id: assignment.orderId }, data: { deliveryStatus: finalStatus } });
+        } else {
+            await prisma.milkSubscription.update({ where: { id: assignment.orderId }, data: { deliveryStatus: finalStatus } });
+        }
+
+        // Trigger notifications based on lifecycle status
         (async () => {
             try {
-                const order = assignment.orderType === 'trial'
-                    ? await prisma.milkTrial.findUnique({ where: { id: assignment.orderId } })
-                    : await prisma.milkSubscription.findUnique({ where: { id: assignment.orderId } });
+                let customerUserId = null;
+                let adminId = assignment.assignedById;
+                if (assignment.orderType === 'trial') {
+                    const order = await prisma.milkTrial.findUnique({ where: { id: assignment.orderId } });
+                    customerUserId = order?.userId;
+                    adminId = order?.adminId || adminId;
+                } else if (assignment.orderType === 'extra') {
+                    const req = await prisma.milkDeliveryRequest.findUnique({ where: { id: assignment.orderId } });
+                    customerUserId = req?.customerId;
+                } else {
+                    const order = await prisma.milkSubscription.findUnique({ where: { id: assignment.orderId } });
+                    customerUserId = order?.userId;
+                    adminId = order?.adminId || adminId;
+                }
 
-                if (deliveryStatus === 'Out for Delivery') {
+                if (finalStatus === 'OUT_FOR_DELIVERY' || normTarget === 'OUT_FOR_DELIVERY') {
                     await notificationService.notifyOutForDelivery({
                         orderId: assignment.orderId,
                         orderType: assignment.orderType,
-                        customerUserId: order?.userId,
+                        customerUserId,
                         boyId: deliveryBoyId,
-                        adminId: order?.adminId
+                        adminId
                     });
-                } else if (deliveryStatus === 'Rejected') {
+                } else if (finalStatus === 'ARRIVED' || normTarget === 'ARRIVED') {
+                    await notificationService.notifyDeliveryArrived({
+                        orderId: assignment.orderId,
+                        orderType: assignment.orderType,
+                        customerUserId,
+                        boyId: deliveryBoyId,
+                        adminId
+                    });
+                } else if (finalStatus === 'DELIVERY_PENDING_CUSTOMER_CONFIRMATION' || normTarget === 'DELIVERY_PENDING_CUSTOMER_CONFIRMATION') {
+                    await notificationService.notifyDeliveryHandoverPending({
+                        orderId: assignment.orderId,
+                        orderType: assignment.orderType,
+                        customerUserId,
+                        boyId: deliveryBoyId,
+                        adminId
+                    });
+                } else if (normTarget === 'REJECTED') {
                     await notificationService.notifyDeliveryFailed({
                         orderId: assignment.orderId,
                         orderType: assignment.orderType,
-                        customerUserId: order?.userId,
+                        customerUserId,
                         boyId: deliveryBoyId,
-                        adminId: order?.adminId,
+                        adminId,
                         reason: notes || 'Delivery rejected by delivery boy'
-                    });
-                } else if (deliveryStatus === 'Delivered') {
-                    const boy = await prisma.admin.findUnique({ where: { id: deliveryBoyId }, select: { name: true } });
-                    await notificationService.notifyDeliveryCompleted({
-                        orderId: assignment.orderId,
-                        orderType: assignment.orderType,
-                        customerUserId: order?.userId,
-                        boyId: deliveryBoyId,
-                        boyName: boy?.name,
-                        adminId: order?.adminId
                     });
                 }
             } catch (err) {
@@ -398,7 +550,7 @@ exports.updateDeliveryStatus = async (req, res) => {
             }
         })();
 
-        res.json({ message: `Status updated to ${deliveryStatus}`, updated });
+        res.json({ message: `Status updated to ${finalStatus}`, updated });
     } catch (error) { res.status(500).json({ message: 'Server error', error: error.message }); }
 };
 
@@ -420,89 +572,299 @@ exports.getMyNotifications = async (req, res) => {
     } catch (error) { res.status(500).json({ message: 'Server error', error: error.message }); }
 };
 
-// ✅ Order Tracking Timeline for User
+async function buildSubscriptionDailySchedule(order, allAssignments, extraRequests) {
+    const start = new Date(order.finalStartDate || order.offeredStartDate || order.requestedStartDate);
+    const end = new Date(order.finalEndDate || order.offeredEndDate || order.requestedEndDate);
+    if (isNaN(start.getTime()) || isNaN(end.getTime())) return null;
+
+    const todayStr = new Date().toISOString().split('T')[0];
+    const assignmentsByDate = {};
+    for (const a of allAssignments) {
+        if (a.deliveryDate) {
+            const dStr = new Date(a.deliveryDate).toISOString().split('T')[0];
+            assignmentsByDate[dStr] = a;
+        }
+    }
+
+    const requestsByDate = {};
+    for (const r of extraRequests) {
+        if (r.deliveryDate) {
+            const dStr = new Date(r.deliveryDate).toISOString().split('T')[0];
+            requestsByDate[dStr] = r;
+        }
+    }
+
+    const days = [];
+    let cur = new Date(start);
+    let dayNumber = 1;
+    let deliveredCount = 0;
+
+    while (cur <= end && days.length < 365) {
+        const dStr = cur.toISOString().split('T')[0];
+        const isToday = dStr === todayStr;
+        const isPast = dStr < todayStr;
+        const isFuture = dStr > todayStr;
+
+        const assignment = assignmentsByDate[dStr];
+        const req = requestsByDate[dStr];
+
+        let status = 'SCHEDULED';
+        let statusLabel = 'Scheduled';
+        let deliveredAt = null;
+        let deliveryBoyName = assignment?.deliveryBoy?.name || null;
+        let extraQty = 0;
+        let isSkipped = false;
+        let quantity = order.dailyQuantity || 1;
+
+        if (req) {
+            if (req.requestType === 'SKIP_DELIVERY' && ['APPROVED', 'CUSTOMER_ACCEPTED', 'EXTRA_ASSIGNED', 'DELIVERED'].includes(req.status)) {
+                isSkipped = true;
+                quantity = 0;
+                status = 'SKIPPED';
+                statusLabel = 'Skipped by Customer';
+            } else if (req.requestType === 'EXTRA_MILK' && ['APPROVED', 'CUSTOMER_ACCEPTED', 'EXTRA_ASSIGNED', 'DELIVERED'].includes(req.status)) {
+                extraQty = req.acceptedQuantity || req.extraQuantity || 0;
+                quantity += extraQty;
+            }
+        }
+
+        if (assignment) {
+            const aStatus = (assignment.deliveryStatus || '').toUpperCase().replace(/ /g, '_');
+            if (['DELIVERED', 'COMPLETED'].includes(aStatus)) {
+                status = 'DELIVERED';
+                statusLabel = 'Delivered';
+                deliveredAt = assignment.deliveredAt || assignment.customerConfirmedAt;
+                deliveredCount++;
+            } else if (['OUT_FOR_DELIVERY', 'ARRIVED', 'DELIVERY_PENDING_CUSTOMER_CONFIRMATION', 'AWAITING_USER_CONFIRMATION', 'QR_SCANNED', 'PRODUCT_COLLECTED'].includes(aStatus)) {
+                status = 'IN_PROGRESS';
+                statusLabel = assignment.deliveryStatus;
+            } else if (aStatus === 'ASSIGNED') {
+                status = isToday ? 'ASSIGNED_TODAY' : 'ASSIGNED';
+                statusLabel = isToday ? 'Assigned for Today' : 'Assigned';
+            }
+        } else if (isPast && !isSkipped) {
+            status = 'PAST';
+            statusLabel = 'Past Scheduled';
+        }
+
+        days.push({
+            dayNumber,
+            date: dStr,
+            formattedDate: cur.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }),
+            dayName: cur.toLocaleDateString('en-GB', { weekday: 'short' }),
+            isToday,
+            isPast,
+            isFuture,
+            status,
+            statusLabel,
+            quantity,
+            unit: order.product?.unit || (order.milkType?.toLowerCase().includes('milk') ? 'L' : 'Qty'),
+            extraQty,
+            isSkipped,
+            deliveredAt,
+            deliveryBoyName,
+            assignmentId: assignment?.id || null,
+        });
+
+        cur.setDate(cur.getDate() + 1);
+        dayNumber++;
+    }
+
+    return {
+        totalDays: days.length,
+        deliveredCount,
+        remainingCount: Math.max(0, days.length - deliveredCount),
+        startDate: start.toISOString().split('T')[0],
+        endDate: end.toISOString().split('T')[0],
+        days
+    };
+}
+
+// ✅ Order Tracking Timeline & Live Location for Customer and Admin
 exports.getOrderTrackingStatus = async (req, res) => {
     try {
         let { orderType, orderId } = req.query;
         if (orderType === 'subscription') orderType = 'sub';
-        const orderIdInt = parseInt(orderId);
+        const orderIdInt = parseInt(orderId, 10);
 
-        let order = orderType === 'trial'
-            ? await prisma.milkTrial.findUnique({ where: { id: orderIdInt } })
-            : await prisma.milkSubscription.findUnique({ where: { id: orderIdInt } });
+        let order = await getOrder(orderType, orderIdInt);
 
         if (!order) return res.status(404).json({ message: 'Order not found' });
 
-        // Get active assignment
+        let dailySchedule = null;
+        let billingSummary = null;
+        if (orderType === 'sub') {
+            const allAssignments = await prisma.deliveryAssignment.findMany({
+                where: { orderType: 'sub', orderId: orderIdInt },
+                include: { deliveryBoy: { select: { id: true, name: true } } },
+                orderBy: { deliveryDate: 'asc' }
+            });
+            const extraRequests = await prisma.milkDeliveryRequest.findMany({
+                where: { subscriptionId: orderIdInt },
+                orderBy: { deliveryDate: 'asc' }
+            });
+            dailySchedule = await buildSubscriptionDailySchedule(order, allAssignments, extraRequests);
+
+            const subPayments = await prisma.milkPayment.findMany({
+                where: { subscriptionId: orderIdInt },
+                orderBy: { createdAt: 'desc' }
+            });
+
+            const totalDays = dailySchedule?.totalDays || order.totalDays || 1;
+            const dailyRate = order.pricePerLitre || (order.totalAmount ? (order.totalAmount / totalDays) : 0);
+            const deliveredCount = dailySchedule?.deliveredCount || 0;
+            const deliveredAmount = Math.round(deliveredCount * dailyRate);
+            const totalPaid = subPayments
+                .filter(p => ['PAID', 'SUCCESS'].includes(p.paymentStatus))
+                .reduce((sum, p) => sum + (p.amount || 0), 0);
+            
+            const totalAmount = order.totalAmount || Math.round(dailyRate * totalDays);
+            const deliveredDue = Math.max(0, deliveredAmount - totalPaid);
+            const totalDue = Math.max(0, totalAmount - totalPaid);
+
+            billingSummary = {
+                dailyRate,
+                totalDays,
+                deliveredCount,
+                deliveredAmount,
+                dailyAmount: Math.round(dailyRate * 1),
+                weeklyAmount: Math.round(dailyRate * 7),
+                monthlyAmount: Math.round(dailyRate * 30),
+                totalPaid,
+                deliveredDue,
+                totalAmount,
+                totalDue,
+                payments: subPayments
+            };
+        }
+
+        // Get active or latest assignment
         const assignment = await prisma.deliveryAssignment.findFirst({
             where: { orderType, orderId: orderIdInt, isActive: true },
-            include: { deliveryBoy: { select: { id: true, name: true } } },
+            include: {
+                deliveryBoy: {
+                    select: {
+                        id: true,
+                        name: true,
+                        email: true,
+                        deliveryProfile: true
+                    }
+                }
+            },
+            orderBy: { createdAt: 'desc' }
+        }) || await prisma.deliveryAssignment.findFirst({
+            where: { orderType, orderId: orderIdInt },
+            include: {
+                deliveryBoy: {
+                    select: {
+                        id: true,
+                        name: true,
+                        email: true,
+                        deliveryProfile: true
+                    }
+                }
+            },
             orderBy: { createdAt: 'desc' }
         });
 
-        // Build timeline steps
-        const deliveryStatus = order.deliveryStatus || 'Pending';
-        const STATUS_ORDER = ['Pending', 'Assigned', 'Accepted', 'Out for Delivery', 'QR_SCANNED', 'AWAITING_USER_CONFIRMATION', 'PARTIALLY_DELIVERED', 'Delivered'];
-        const currentIdx = STATUS_ORDER.indexOf(deliveryStatus);
+        const rawDeliveryStatus = assignment?.deliveryStatus || order.deliveryStatus || 'Pending';
+        const normStatus = rawDeliveryStatus.toUpperCase().replace(/ /g, '_');
 
-        // For subscriptions, check payment
-        const isPaid = orderType === 'sub'
-            ? (order.paymentStatus === 'PAID' || order.paymentStatus === 'CASH_PENDING')
-            : true; // trials don't need payment
+        // Order lifecycle progression
+        const STAGES = [
+            'ORDER_PLACED',
+            'ASSIGNED',
+            'PRODUCT_COLLECTED',
+            'OUT_FOR_DELIVERY',
+            'ARRIVED',
+            'DELIVERY_PENDING_CUSTOMER_CONFIRMATION',
+            'DELIVERED'
+        ];
+
+        let currentStageIdx = 0;
+        if (normStatus === 'DELIVERED') currentStageIdx = 6;
+        else if (normStatus === 'DELIVERY_PENDING_CUSTOMER_CONFIRMATION' || normStatus === 'AWAITING_USER_CONFIRMATION') currentStageIdx = 5;
+        else if (normStatus === 'ARRIVED') currentStageIdx = 4;
+        else if (normStatus === 'OUT_FOR_DELIVERY') currentStageIdx = 3;
+        else if (normStatus === 'PRODUCT_COLLECTED') currentStageIdx = 2;
+        else if (normStatus === 'ASSIGNED' || assignment) currentStageIdx = 1;
+
+        const isOutForDeliveryOrBeyond = currentStageIdx >= 3;
+        const boyProfile = assignment?.deliveryBoy?.deliveryProfile;
+
+        // Coordinates & ETA
+        let distanceKm = null;
+        let estimatedMins = null;
+        if (isOutForDeliveryOrBeyond) {
+            if (currentStageIdx === 3) {
+                distanceKm = 2.4;
+                estimatedMins = 12;
+            } else if (currentStageIdx === 4) {
+                distanceKm = 0.1;
+                estimatedMins = 1;
+            } else if (currentStageIdx >= 5) {
+                distanceKm = 0.0;
+                estimatedMins = 0;
+            }
+        }
 
         const timeline = [
             {
-                key: 'placed',
+                key: 'ORDER_PLACED',
                 label: 'Order Placed',
                 icon: '📋',
                 done: true,
-                timestamp: order.createdAt
+                timestamp: order.createdAt,
+                note: 'Order successfully created'
             },
             {
-                key: 'payment',
-                label: orderType === 'sub' ? 'Payment Successful' : 'Request Submitted',
-                icon: '💳',
-                done: orderType === 'sub' ? isPaid : (order.status !== 'PENDING_ADMIN'),
-                note: orderType === 'sub' && !isPaid ? 'Waiting for payment' : null,
-                timestamp: null
-            },
-            {
-                key: 'confirmed',
-                label: 'Order Confirmed',
-                icon: '✅',
-                done: orderType === 'sub' ? (order.status === 'ACTIVE') : (order.status === 'ACTIVE'),
-                note: order.status === 'PENDING_ADMIN' ? 'Awaiting admin confirmation' : null,
-                timestamp: null
-            },
-            {
-                key: 'assigned',
-                label: 'Delivery Boy Assigned',
+                key: 'ASSIGNED',
+                label: 'Assigned to Delivery Boy',
                 icon: '🚴',
-                done: currentIdx >= 1,
+                done: currentStageIdx >= 1,
                 deliveryBoyName: assignment?.deliveryBoy?.name || null,
-                timestamp: assignment?.createdAt || null
+                timestamp: assignment?.assignedAt || assignment?.createdAt || null,
+                note: currentStageIdx >= 1 ? `Assigned to ${assignment?.deliveryBoy?.name || 'Partner'}` : 'Awaiting assignment'
             },
             {
-                key: 'accepted',
-                label: 'Delivery Boy Accepted',
-                icon: '🤝',
-                done: currentIdx >= 2,
-                note: currentIdx === 1 ? 'Waiting for delivery boy to accept' : null,
-                timestamp: null
+                key: 'PRODUCT_COLLECTED',
+                label: 'Product Collected',
+                icon: '📦',
+                done: currentStageIdx >= 2,
+                timestamp: assignment?.productCollectedAt || null,
+                note: currentStageIdx >= 2 ? 'Collected from store/farm' : 'Pending collection'
             },
             {
-                key: 'out_for_delivery',
+                key: 'OUT_FOR_DELIVERY',
                 label: 'Out for Delivery',
-                icon: '🛵',
-                done: currentIdx >= 3,
-                timestamp: null
+                icon: '🚚',
+                done: currentStageIdx >= 3,
+                timestamp: assignment?.outForDeliveryAt || null,
+                note: currentStageIdx >= 3 ? 'On the way to customer location' : 'Pending dispatch'
             },
             {
-                key: 'delivered',
-                label: 'Delivered',
+                key: 'ARRIVED',
+                label: 'Arrived at Customer',
+                icon: '📍',
+                done: currentStageIdx >= 4,
+                timestamp: assignment?.arrivedAt || null,
+                note: currentStageIdx >= 4 ? 'Delivery partner arrived at destination' : 'On route'
+            },
+            {
+                key: 'DELIVERY_PENDING_CUSTOMER_CONFIRMATION',
+                label: 'Handover Confirmed',
+                icon: '🤝',
+                done: currentStageIdx >= 5,
+                timestamp: assignment?.deliveryConfirmedAt || null,
+                note: currentStageIdx >= 5 ? 'Product handed over, awaiting customer receipt confirmation' : 'Pending handover'
+            },
+            {
+                key: 'DELIVERED',
+                label: 'Delivered & Confirmed',
                 icon: '✅',
-                done: currentIdx >= 4,
-                timestamp: null
+                done: currentStageIdx >= 6,
+                timestamp: assignment?.customerConfirmedAt || assignment?.deliveredAt || null,
+                note: currentStageIdx >= 6 ? 'Customer confirmed delivery receipt' : 'Pending customer confirmation'
             }
         ];
 
@@ -511,15 +873,37 @@ exports.getOrderTrackingStatus = async (req, res) => {
             orderType,
             customerName: order.customerName,
             milkType: order.milkType,
+            productName: order.product?.name || order.milkType,
             dailyQuantity: order.dailyQuantity,
+            unit: order.product?.unit || 'L',
             address: order.address,
+            pincode: order.pincode,
             orderStatus: order.status,
             paymentStatus: orderType === 'sub' ? order.paymentStatus : null,
-            deliveryStatus,
+            deliveryStatus: rawDeliveryStatus,
+            deliveryBoy: assignment?.deliveryBoy ? {
+                id: assignment.deliveryBoy.id,
+                name: assignment.deliveryBoy.name,
+                mobile: boyProfile?.mobile || 'N/A',
+                latitude: boyProfile?.latitude || 23.0225,
+                longitude: boyProfile?.longitude || 72.5714
+            } : null,
             deliveryBoyName: assignment?.deliveryBoy?.name || null,
-            isQrScanned: assignment?.isQrScanned || false,
-            awaitingUserConfirmation: deliveryStatus === 'AWAITING_USER_CONFIRMATION',
-            timeline
+            isTrackingAvailable: isOutForDeliveryOrBeyond,
+            distanceKm,
+            estimatedMins,
+            timestamps: {
+                assignedAt: assignment?.assignedAt || assignment?.createdAt || null,
+                productCollectedAt: assignment?.productCollectedAt || null,
+                outForDeliveryAt: assignment?.outForDeliveryAt || null,
+                arrivedAt: assignment?.arrivedAt || null,
+                deliveryConfirmedAt: assignment?.deliveryConfirmedAt || null,
+                customerConfirmedAt: assignment?.customerConfirmedAt || null
+            },
+            canCustomerConfirm: ['DELIVERY_PENDING_CUSTOMER_CONFIRMATION', 'AWAITING_USER_CONFIRMATION', 'ARRIVED', 'OUT_FOR_DELIVERY'].includes((assignment?.deliveryStatus || rawDeliveryStatus || '').toUpperCase().replace(/ /g, '_')) && !['Delivered', 'DELIVERED'].includes(rawDeliveryStatus),
+            timeline,
+            dailySchedule,
+            billingSummary
         });
     } catch (error) { res.status(500).json({ message: 'Server error', error: error.message }); }
 };
@@ -539,15 +923,48 @@ const TERMINAL_DELIVERY_STATUSES = ['Delivered', 'CANCELLED', 'Cancelled', 'Reje
 
 async function getOrder(orderType, orderId) {
     const normalized = normalizeOrderType(orderType);
-    return normalized === 'trial'
-        ? prisma.milkTrial.findUnique({ where: { id: parseInt(orderId) }, include: { product: true } })
-        : prisma.milkSubscription.findUnique({ where: { id: parseInt(orderId) }, include: { product: true } });
+    if (normalized === 'trial') {
+        return prisma.milkTrial.findUnique({ where: { id: parseInt(orderId) }, include: { product: true } });
+    }
+    if (normalized === 'extra') {
+        const req = await prisma.milkDeliveryRequest.findUnique({
+            where: { id: parseInt(orderId) },
+            include: { customer: true, subscription: { include: { product: true } } }
+        });
+        if (!req) return null;
+        const exactAccepted = req.acceptedQuantity !== null && req.acceptedQuantity !== undefined ? req.acceptedQuantity : req.extraQuantity;
+        return {
+            id: req.id,
+            orderCategory: 'extra',
+            customerName: req.customer?.name || 'Customer',
+            phone: req.subscription?.phone || '',
+            address: req.subscription?.address || '',
+            pincode: req.subscription?.pincode || '',
+            milkType: req.subscription?.product?.name || req.subscription?.milkType || 'Milk',
+            dailyQuantity: exactAccepted,
+            product: req.subscription?.product,
+            userId: req.customerId,
+            deliveryStatus: req.deliveryStatus || 'EXTRA_ASSIGNED',
+            deliveryDate: req.deliveryDate,
+            acceptedQuantity: exactAccepted
+        };
+    }
+    return prisma.milkSubscription.findUnique({ where: { id: parseInt(orderId) }, include: { product: true } });
 }
 
 async function updateOrderDeliveryStatus(tx, orderType, orderId, deliveryStatus) {
     const normalized = normalizeOrderType(orderType);
     if (normalized === 'trial') {
         return tx.milkTrial.update({ where: { id: parseInt(orderId) }, data: { deliveryStatus } });
+    }
+    if (normalized === 'extra') {
+        return tx.milkDeliveryRequest.update({
+            where: { id: parseInt(orderId) },
+            data: {
+                deliveryStatus,
+                status: deliveryStatus === 'DELIVERED' ? 'DELIVERED' : undefined
+            }
+        });
     }
     return tx.milkSubscription.update({ where: { id: parseInt(orderId) }, data: { deliveryStatus } });
 }
@@ -750,30 +1167,65 @@ exports.confirmDelivery = async (req, res) => {
         const now = new Date();
 
         const result = await prisma.$transaction(async (tx) => {
-            const order = orderType === 'trial'
-                ? await tx.milkTrial.findUnique({ where: { id: orderId } })
-                : await tx.milkSubscription.findUnique({ where: { id: orderId } });
+            let order = null;
+            if (orderType === 'trial') {
+                order = await tx.milkTrial.findUnique({ where: { id: orderId } });
+            } else if (orderType === 'extra') {
+                const req = await tx.milkDeliveryRequest.findUnique({ where: { id: orderId } });
+                if (req) {
+                    order = {
+                        id: req.id,
+                        userId: req.customerId,
+                        adminId: req.approvedById || 1
+                    };
+                }
+            } else {
+                order = await tx.milkSubscription.findUnique({ where: { id: orderId } });
+            }
             if (!order) throw Object.assign(new Error('Order not found.'), { status: 404 });
-            if (order.userId !== userId) throw Object.assign(new Error('You cannot confirm this delivery.'), { status: 403 });
+            const isAdmin = req.admin.role === 'ADMIN';
+            if (order.userId && order.userId !== userId && !isAdmin) {
+                throw Object.assign(new Error('You cannot confirm this delivery.'), { status: 403 });
+            }
 
             const assignment = await tx.deliveryAssignment.findFirst({
-                where: { orderType, orderId, isActive: true, deliveryStatus: 'AWAITING_USER_CONFIRMATION' },
+                where: {
+                    orderType,
+                    orderId,
+                    isActive: true,
+                    deliveryStatus: { in: ['DELIVERY_PENDING_CUSTOMER_CONFIRMATION', 'AWAITING_USER_CONFIRMATION', 'ARRIVED', 'OUT_FOR_DELIVERY'] }
+                },
                 include: { deliveryBoy: { select: { id: true, name: true } } },
             });
-            if (!assignment) throw Object.assign(new Error('No delivery is awaiting your confirmation.'), { status: 400 });
-            if (!assignment.isQrScanned) throw Object.assign(new Error('Delivery QR was not scanned.'), { status: 400 });
+            if (!assignment) throw Object.assign(new Error('No delivery is currently awaiting customer confirmation.'), { status: 400 });
 
             const updatedAssignment = await tx.deliveryAssignment.update({
                 where: { id: assignment.id },
                 data: {
                     deliveryStatus: 'Delivered',
-                    isOtpVerified: false,
+                    customerConfirmedAt: now,
                     userConfirmedAt: now,
                     deliveredAt: now,
                     isActive: false,
                 },
             });
             await updateOrderDeliveryStatus(tx, orderType, orderId, 'Delivered');
+            if (orderType === 'trial') {
+                await tx.milkTrial.update({ where: { id: orderId }, data: { status: 'COMPLETED', deliveryStatus: 'Delivered' } });
+            } else if (orderType === 'extra') {
+                await tx.milkDeliveryRequest.update({ where: { id: orderId }, data: { status: 'DELIVERED', deliveryStatus: 'Delivered' } });
+            } else {
+                const sub = await tx.milkSubscription.findUnique({ where: { id: orderId } });
+                const endDate = sub?.finalEndDate || sub?.offeredEndDate || sub?.requestedEndDate;
+                const isFinalDay = endDate && new Date() >= new Date(endDate);
+                await tx.milkSubscription.update({
+                    where: { id: orderId },
+                    data: {
+                        status: isFinalDay ? 'COMPLETED' : 'ACTIVE',
+                        deliveryStatus: 'Delivered'
+                    }
+                });
+            }
 
             await tx.deliveryHistory.create({
                 data: {
@@ -791,39 +1243,53 @@ exports.confirmDelivery = async (req, res) => {
                 },
             });
 
-            const adminId = order.adminId;
-            await tx.userAlert.createMany({
-                data: [
-                    {
-                        userId,
-                        type: 'DELIVERY_COMPLETED',
-                        orderType,
-                        orderId,
-                        message: 'Your delivery has been successfully completed.',
-                        metadata: { deliveredAt: now },
-                    },
-                    {
-                        userId: assignment.deliveryBoyId,
-                        type: 'DELIVERY_CONFIRMED_BY_USER',
-                        orderType,
-                        orderId,
-                        message: `Delivery confirmed by ${order.customerName}.`,
-                        metadata: { deliveredAt: now },
-                    },
-                    {
-                        userId: adminId,
-                        type: 'DELIVERY_COMPLETED_ADMIN',
-                        orderType,
-                        orderId,
-                        message: `Order #${orderId} has been successfully delivered by ${assignment.deliveryBoy?.name || 'delivery boy'}.`,
-                        metadata: { customerName: order.customerName, deliveryBoyId: assignment.deliveryBoyId, deliveredAt: now },
-                    },
-                ],
-            });
+            const adminId = order.adminId || assignment.assignedById || 1;
+            const customerName = order.customerName || 'Customer';
+
+            const alertsToCreate = [
+                {
+                    userId,
+                    type: 'DELIVERY_COMPLETED',
+                    title: 'Delivery Confirmed',
+                    role: 'USER',
+                    orderType,
+                    orderId,
+                    message: 'Your delivery has been successfully completed and confirmed. Thank you!',
+                    metadata: { deliveredAt: now },
+                }
+            ];
+
+            if (assignment.deliveryBoyId) {
+                alertsToCreate.push({
+                    userId: assignment.deliveryBoyId,
+                    type: 'DELIVERY_CONFIRMED_BY_USER',
+                    title: 'Delivery Confirmed by Customer',
+                    role: 'DELIVERY_BOY',
+                    orderType,
+                    orderId,
+                    message: `Delivery #${orderId} has been confirmed as received by ${customerName}.`,
+                    metadata: { deliveredAt: now },
+                });
+            }
+
+            if (adminId) {
+                alertsToCreate.push({
+                    userId: adminId,
+                    type: 'DELIVERY_COMPLETED_ADMIN',
+                    title: 'Delivery Confirmed by Customer',
+                    role: 'ADMIN',
+                    orderType,
+                    orderId,
+                    message: `Order #${orderId} (${customerName}) delivery has been confirmed by customer. Delivered by ${assignment.deliveryBoy?.name || 'delivery boy'}.`,
+                    metadata: { customerName, deliveryBoyId: assignment.deliveryBoyId, deliveredAt: now },
+                });
+            }
+
+            await tx.userAlert.createMany({ data: alertsToCreate });
 
             await tx.userAlert.updateMany({
-                where: { userId, type: 'DELIVERY_CONFIRMATION', orderType, orderId, isRead: false },
-                data: { isRead: true },
+                where: { userId, type: 'DELIVERY_CONFIRMATION', orderType, orderId },
+                data: { isRead: true, isDismissed: true, dismissedAt: now, readAt: now },
             });
 
             // Trigger Role-Based Delivery Completed Notifications
@@ -831,6 +1297,7 @@ exports.confirmDelivery = async (req, res) => {
                 orderId,
                 orderType,
                 customerUserId: userId,
+                customerName,
                 boyId: assignment.deliveryBoyId,
                 boyName: assignment.deliveryBoy?.name,
                 adminId
@@ -887,6 +1354,10 @@ exports.reportDeliveryIssue = async (req, res) => {
                     message: `Customer reported a delivery issue for order #${orderId}: ${issue}`,
                     metadata: { userId, deliveryBoyId: assignment.deliveryBoyId },
                 },
+            });
+            await tx.userAlert.updateMany({
+                where: { userId, type: 'DELIVERY_CONFIRMATION', orderType, orderId },
+                data: { isRead: true, isDismissed: true, dismissedAt: new Date(), readAt: new Date() },
             });
 
             // Trigger Role-Based Delivery Issue Notification + Special Alert

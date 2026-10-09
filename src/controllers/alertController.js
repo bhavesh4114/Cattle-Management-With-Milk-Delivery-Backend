@@ -274,10 +274,25 @@ exports.dismissSpecialAlert = async (req, res) => {
       return res.status(403).json({ error: 'Unauthorized to dismiss this alert' });
     }
 
+    const now = new Date();
     await prisma.userAlert.update({
       where: { id: parseInt(id, 10) },
-      data: { isDismissed: true, dismissedAt: new Date(), isRead: true }
+      data: { isDismissed: true, dismissedAt: now, isRead: true, readAt: now }
     });
+
+    // If it's a delivery confirmation alert, dismiss any duplicate confirmation alerts for the same order as well
+    if (alert.orderId && (alert.type === 'DELIVERY_CONFIRMATION' || alert.type === 'CONFIRM_DELIVERY')) {
+      await prisma.userAlert.updateMany({
+        where: {
+          userId: alert.userId,
+          orderId: alert.orderId,
+          orderType: alert.orderType,
+          type: 'DELIVERY_CONFIRMATION',
+          isDismissed: false
+        },
+        data: { isDismissed: true, dismissedAt: now, isRead: true, readAt: now }
+      });
+    }
 
     res.json({ success: true, message: 'Alert dismissed' });
   } catch (error) {
@@ -286,18 +301,95 @@ exports.dismissSpecialAlert = async (req, res) => {
   }
 };
 
-// Backward-compatible endpoint for existing AlertPopup.jsx
+// Endpoint for modal AlertPopup (ONLY urgent actionable alerts, NOT routine notifications)
 exports.getMyAlerts = async (req, res) => {
   try {
     const userId = req.admin?.id;
     if (!userId) {
       return res.status(401).json({ error: 'User not authenticated' });
     }
-    const alerts = await prisma.userAlert.findMany({
-      where: { userId, isRead: false },
+    await ensureUserAlertColumns();
+    const candidateAlerts = await prisma.userAlert.findMany({
+      where: {
+        userId,
+        isRead: false,
+        isDismissed: false,
+        // Only actual actionable alerts belong in the modal popup, regular notifications belong in the bell center
+        OR: [
+          { type: 'DELIVERY_CONFIRMATION' },
+          { isSpecialAlert: true, priority: 'CRITICAL' }
+        ]
+      },
       orderBy: { createdAt: 'desc' }
     });
-    res.json(alerts);
+
+    if (!candidateAlerts || candidateAlerts.length === 0) {
+      return res.json([]);
+    }
+
+    // Filter candidate alerts: if an order is already DELIVERED or COMPLETED, or if active assignment is no longer pending confirmation,
+    // auto-mark the alert as dismissed and do not return it to prevent repeating popups
+    const validAlerts = [];
+    const now = new Date();
+
+    for (const a of candidateAlerts) {
+      if (a.type === 'DELIVERY_CONFIRMATION' && a.orderId) {
+        const orderType = (a.orderType || 'sub').toLowerCase();
+        let isStillPending = false;
+        try {
+          if (orderType === 'trial') {
+            const trial = await prisma.milkTrial.findUnique({
+              where: { id: a.orderId },
+              select: { status: true, deliveryStatus: true }
+            });
+            if (trial && !['COMPLETED', 'CANCELLED', 'REJECTED'].includes(trial.status) && trial.deliveryStatus !== 'DELIVERED') {
+              const activeAssign = await prisma.deliveryAssignment.findFirst({
+                where: {
+                  orderType: 'trial',
+                  orderId: a.orderId,
+                  isActive: true,
+                  deliveryStatus: { in: ['DELIVERY_PENDING_CUSTOMER_CONFIRMATION', 'AWAITING_USER_CONFIRMATION', 'ARRIVED'] }
+                }
+              });
+              if (activeAssign) isStillPending = true;
+            }
+          } else {
+            const sub = await prisma.milkSubscription.findUnique({
+              where: { id: a.orderId },
+              select: { status: true, deliveryStatus: true }
+            });
+            if (sub && !['COMPLETED', 'CANCELLED', 'REJECTED'].includes(sub.status) && sub.deliveryStatus !== 'DELIVERED') {
+              const activeAssign = await prisma.deliveryAssignment.findFirst({
+                where: {
+                  orderType: 'sub',
+                  orderId: a.orderId,
+                  isActive: true,
+                  deliveryStatus: { in: ['DELIVERY_PENDING_CUSTOMER_CONFIRMATION', 'AWAITING_USER_CONFIRMATION', 'ARRIVED'] }
+                }
+              });
+              if (activeAssign) isStillPending = true;
+            }
+          }
+        } catch (checkErr) {
+          console.error('[getMyAlerts order status check error]', checkErr);
+          isStillPending = true;
+        }
+
+        if (isStillPending) {
+          validAlerts.push(a);
+        } else {
+          // Auto-dismiss stale confirmation alert so it never asks again
+          await prisma.userAlert.update({
+            where: { id: a.id },
+            data: { isDismissed: true, dismissedAt: now, isRead: true, readAt: now }
+          }).catch(() => {});
+        }
+      } else {
+        validAlerts.push(a);
+      }
+    }
+
+    res.json(validAlerts);
   } catch (error) {
     console.error('Error fetching alerts:', error);
     res.status(500).json({ error: 'Failed to fetch alerts' });

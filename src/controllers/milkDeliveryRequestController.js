@@ -16,7 +16,16 @@ exports.createRequest = async (req, res) => {
     const request = await service.createRequest(customerId, req.body);
     res.status(201).json({ message: "Milk delivery request submitted successfully", request });
   } catch (error) {
-    const status = error.message.includes("at least 2 days") || error.message.includes("past") || error.message.includes("Invalid") || error.message.includes("already exists") ? 400 : 500;
+    const status = error.statusCode || error.status || (
+      error.message.includes("at least") ||
+      error.message.includes("past") ||
+      error.message.includes("Invalid") ||
+      error.message.includes("already exists") ||
+      error.message.includes("active monthly subscription") ||
+      error.message.includes("subscription")
+        ? 400
+        : 500
+    );
     res.status(status).json({ message: error.message });
   }
 };
@@ -37,7 +46,14 @@ exports.updateRequest = async (req, res) => {
     const updated = await service.updateCustomerRequest(req.params.id, customerId, req.body);
     res.json({ message: "Request updated successfully", request: updated });
   } catch (error) {
-    const status = error.message.includes("at least 2 days") || error.message.includes("Unauthorized") || error.message.includes("Cannot modify") ? 400 : 500;
+    const status = error.statusCode || error.status || (
+      error.message.includes("at least") ||
+      error.message.includes("Unauthorized") ||
+      error.message.includes("Cannot modify") ||
+      error.message.includes("active monthly subscription")
+        ? 400
+        : 500
+    );
     res.status(status).json({ message: error.message });
   }
 };
@@ -88,5 +104,41 @@ exports.rejectRequest = async (req, res) => {
     res.json({ message: "Request rejected successfully", request: updated });
   } catch (error) {
     res.status(400).json({ message: error.message });
+  }
+};
+
+exports.offerAvailableQuantity = async (req, res) => {
+  try {
+    const adminId = req.admin.id;
+    const { availableQuantity, offeredQuantity } = req.body;
+    const updated = await service.offerAvailableQuantity(req.params.id, adminId, { availableQuantity, offeredQuantity });
+    res.json({ message: "Offered available quantity successfully", request: updated });
+  } catch (error) {
+    const status = error.statusCode || 400;
+    res.status(status).json({ message: error.message });
+  }
+};
+
+exports.customerRespondToOffer = async (req, res) => {
+  try {
+    const customerId = req.admin.id;
+    const { decision } = req.body;
+    const updated = await service.customerRespondToOffer(req.params.id, customerId, { decision });
+    res.json({ message: `Offer ${decision === "ACCEPT" ? "accepted" : "rejected"} successfully`, request: updated });
+  } catch (error) {
+    const status = error.statusCode || 400;
+    res.status(status).json({ message: error.message });
+  }
+};
+
+exports.assignDeliveryBoy = async (req, res) => {
+  try {
+    const adminId = req.admin.id;
+    const { deliveryBoyId } = req.body;
+    const result = await service.assignDeliveryBoy(req.params.id, adminId, { deliveryBoyId });
+    res.json({ message: "Delivery boy assigned successfully", result });
+  } catch (error) {
+    const status = error.statusCode || 400;
+    res.status(status).json({ message: error.message });
   }
 };

@@ -536,6 +536,15 @@ model DeliveryAssignment {
   previousDeliveryBoyId Int?
   needsReassignment     Boolean  @default(false)
   reassignmentReason    String?
+
+  // Lifecycle Timestamps
+  assignedAt           DateTime? @default(now())
+  productCollectedAt   DateTime?
+  outForDeliveryAt     DateTime?
+  arrivedAt            DateTime?
+  deliveryConfirmedAt  DateTime?
+  customerConfirmedAt  DateTime?
+
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
 }
@@ -608,24 +617,30 @@ model DeliveryBoyLeave {
 }
 
 model MilkDeliveryRequest {
-  id              Int               @id @default(autoincrement())
-  customerId      Int
-  customer        Admin             @relation(name: "CustomerDeliveryRequests", fields: [customerId], references: [id], onDelete: Cascade)
-  subscriptionId  Int?
-  subscription    MilkSubscription? @relation(fields: [subscriptionId], references: [id], onDelete: SetNull)
-  deliveryDate    DateTime
-  requestType     String            // EXTRA_MILK, SKIP_DELIVERY
-  regularQuantity Float             @default(0)
-  extraQuantity   Float             @default(0)
-  totalQuantity   Float             @default(0)
-  note            String?
-  status          String            @default("PENDING") // PENDING, APPROVED, REJECTED, CANCELLED
-  approvedById    Int?
-  approvedBy      Admin?            @relation(name: "AdminApprovedRequests", fields: [approvedById], references: [id], onDelete: SetNull)
-  approvedAt      DateTime?
-  rejectedReason  String?
-  createdAt       DateTime          @default(now())
-  updatedAt       DateTime          @updatedAt
+  id                    Int               @id @default(autoincrement())
+  customerId            Int
+  customer              Admin             @relation(name: "CustomerDeliveryRequests", fields: [customerId], references: [id], onDelete: Cascade)
+  subscriptionId        Int?
+  subscription          MilkSubscription? @relation(fields: [subscriptionId], references: [id], onDelete: SetNull)
+  deliveryDate          DateTime
+  requestType           String            // EXTRA_MILK, SKIP_DELIVERY
+  regularQuantity       Float             @default(0)
+  extraQuantity         Float             @default(0)
+  totalQuantity         Float             @default(0)
+  note                  String?
+  status                String            @default("EXTRA_REQUESTED") // EXTRA_REQUESTED, ADMIN_OFFERED, CUSTOMER_ACCEPTED, EXTRA_REQUEST_REJECTED, EXTRA_ASSIGNED, DELIVERED, PENDING, APPROVED, REJECTED, CANCELLED
+  availableQuantity     Float?
+  offeredQuantity       Float?
+  acceptedQuantity      Float?
+  assignedDeliveryBoyId Int?
+  deliveryStatus        String?
+  assignmentId          Int?
+  approvedById          Int?
+  approvedBy            Admin?            @relation(name: "AdminApprovedRequests", fields: [approvedById], references: [id], onDelete: SetNull)
+  approvedAt            DateTime?
+  rejectedReason        String?
+  createdAt             DateTime          @default(now())
+  updatedAt             DateTime          @updatedAt
 
   @@index([customerId, deliveryDate])
   @@index([status, deliveryDate])
