@@ -1,42 +1,30 @@
 -- AlterTable
-ALTER TABLE "Admin" ADD COLUMN     "referralCode" TEXT,
-ADD COLUMN     "referredById" INTEGER;
+ALTER TABLE "Admin" ADD COLUMN IF NOT EXISTS "referralCode" TEXT,
+ADD COLUMN IF NOT EXISTS "referredById" INTEGER;
 
 -- AlterTable
-ALTER TABLE "DeliveryAssignment" ADD COLUMN     "arrivedAt" TIMESTAMP(3),
-ADD COLUMN     "assignedAt" TIMESTAMP(3) DEFAULT CURRENT_TIMESTAMP,
-ADD COLUMN     "customerConfirmedAt" TIMESTAMP(3),
-ADD COLUMN     "delayAlertSentAt" TIMESTAMP(3),
-ADD COLUMN     "deliveryCompletedAt" TIMESTAMP(3),
-ADD COLUMN     "deliveryConfirmedAt" TIMESTAMP(3),
-ADD COLUMN     "deliveryStartTime" TIMESTAMP(3),
-ADD COLUMN     "estimatedDeliveryTime" TIMESTAMP(3),
-ADD COLUMN     "outForDeliveryAt" TIMESTAMP(3),
-ADD COLUMN     "productCollectedAt" TIMESTAMP(3),
-ALTER COLUMN "updatedAt" DROP DEFAULT;
-
--- AlterTable
-ALTER TABLE "DeliveryBoyLeave" ALTER COLUMN "updatedAt" DROP DEFAULT;
-
--- AlterTable
-ALTER TABLE "DeliveryBoyProfile" ALTER COLUMN "updatedAt" DROP DEFAULT;
-
--- AlterTable
-ALTER TABLE "DeliveryHistory" ALTER COLUMN "updatedAt" DROP DEFAULT;
+ALTER TABLE "DeliveryAssignment" ADD COLUMN IF NOT EXISTS "arrivedAt" TIMESTAMP(3),
+ADD COLUMN IF NOT EXISTS "assignedAt" TIMESTAMP(3) DEFAULT CURRENT_TIMESTAMP,
+ADD COLUMN IF NOT EXISTS "customerConfirmedAt" TIMESTAMP(3),
+ADD COLUMN IF NOT EXISTS "delayAlertSentAt" TIMESTAMP(3),
+ADD COLUMN IF NOT EXISTS "deliveryCompletedAt" TIMESTAMP(3),
+ADD COLUMN IF NOT EXISTS "deliveryConfirmedAt" TIMESTAMP(3),
+ADD COLUMN IF NOT EXISTS "deliveryStartTime" TIMESTAMP(3),
+ADD COLUMN IF NOT EXISTS "estimatedDeliveryTime" TIMESTAMP(3),
+ADD COLUMN IF NOT EXISTS "outForDeliveryAt" TIMESTAMP(3),
+ADD COLUMN IF NOT EXISTS "productCollectedAt" TIMESTAMP(3);
 
 -- AlterTable
 ALTER TABLE "Item" DROP COLUMN IF EXISTS "category",
 DROP COLUMN IF EXISTS "quantity";
 
 -- AlterTable
-ALTER TABLE "MilkDeliveryRequest" ADD COLUMN     "acceptedQuantity" DOUBLE PRECISION,
-ADD COLUMN     "assignedDeliveryBoyId" INTEGER,
-ADD COLUMN     "assignmentId" INTEGER,
-ADD COLUMN     "availableQuantity" DOUBLE PRECISION,
-ADD COLUMN     "deliveryStatus" TEXT,
-ADD COLUMN     "offeredQuantity" DOUBLE PRECISION,
-ALTER COLUMN "status" SET DEFAULT 'EXTRA_REQUESTED',
-ALTER COLUMN "updatedAt" DROP DEFAULT;
+ALTER TABLE "MilkDeliveryRequest" ADD COLUMN IF NOT EXISTS "acceptedQuantity" DOUBLE PRECISION,
+ADD COLUMN IF NOT EXISTS "assignedDeliveryBoyId" INTEGER,
+ADD COLUMN IF NOT EXISTS "assignmentId" INTEGER,
+ADD COLUMN IF NOT EXISTS "availableQuantity" DOUBLE PRECISION,
+ADD COLUMN IF NOT EXISTS "deliveryStatus" TEXT,
+ADD COLUMN IF NOT EXISTS "offeredQuantity" DOUBLE PRECISION;
 
 -- AlterTable
 ALTER TABLE "MilkRecord" DROP COLUMN IF EXISTS "liters",
@@ -49,11 +37,10 @@ DROP COLUMN IF EXISTS "customer",
 DROP COLUMN IF EXISTS "itemName",
 DROP COLUMN IF EXISTS "orderedAt",
 DROP COLUMN IF EXISTS "quantity",
-DROP COLUMN IF EXISTS "status",
-ALTER COLUMN "vendorName" DROP DEFAULT;
+DROP COLUMN IF EXISTS "status";
 
 -- CreateTable
-CREATE TABLE "OrderFeedback" (
+CREATE TABLE IF NOT EXISTS "OrderFeedback" (
     "id" SERIAL NOT NULL,
     "orderType" TEXT NOT NULL,
     "orderId" INTEGER NOT NULL,
@@ -70,7 +57,7 @@ CREATE TABLE "OrderFeedback" (
 );
 
 -- CreateTable
-CREATE TABLE "CustomerComplaint" (
+CREATE TABLE IF NOT EXISTS "CustomerComplaint" (
     "id" SERIAL NOT NULL,
     "complaintCode" TEXT NOT NULL,
     "orderType" TEXT NOT NULL,
@@ -94,7 +81,7 @@ CREATE TABLE "CustomerComplaint" (
 );
 
 -- CreateTable
-CREATE TABLE "ComplaintStatusHistory" (
+CREATE TABLE IF NOT EXISTS "ComplaintStatusHistory" (
     "id" SERIAL NOT NULL,
     "complaintId" INTEGER NOT NULL,
     "status" TEXT NOT NULL,
@@ -107,7 +94,7 @@ CREATE TABLE "ComplaintStatusHistory" (
 );
 
 -- CreateTable
-CREATE TABLE "ChatConversation" (
+CREATE TABLE IF NOT EXISTS "ChatConversation" (
     "id" SERIAL NOT NULL,
     "participantId" INTEGER NOT NULL,
     "participantRole" TEXT NOT NULL,
@@ -120,7 +107,7 @@ CREATE TABLE "ChatConversation" (
 );
 
 -- CreateTable
-CREATE TABLE "ChatMessage" (
+CREATE TABLE IF NOT EXISTS "ChatMessage" (
     "id" SERIAL NOT NULL,
     "conversationId" INTEGER NOT NULL,
     "senderId" INTEGER NOT NULL,
@@ -134,7 +121,7 @@ CREATE TABLE "ChatMessage" (
 );
 
 -- CreateTable
-CREATE TABLE "DeliveryProof" (
+CREATE TABLE IF NOT EXISTS "DeliveryProof" (
     "id" SERIAL NOT NULL,
     "orderType" TEXT NOT NULL,
     "orderId" INTEGER NOT NULL,
@@ -159,7 +146,7 @@ CREATE TABLE "DeliveryProof" (
 );
 
 -- CreateTable
-CREATE TABLE "Coupon" (
+CREATE TABLE IF NOT EXISTS "Coupon" (
     "id" SERIAL NOT NULL,
     "code" TEXT NOT NULL,
     "description" TEXT,
@@ -180,7 +167,7 @@ CREATE TABLE "Coupon" (
 );
 
 -- CreateTable
-CREATE TABLE "UserCoupon" (
+CREATE TABLE IF NOT EXISTS "UserCoupon" (
     "id" SERIAL NOT NULL,
     "userId" INTEGER NOT NULL,
     "couponId" INTEGER NOT NULL,
@@ -194,7 +181,7 @@ CREATE TABLE "UserCoupon" (
 );
 
 -- CreateTable
-CREATE TABLE "ReferralSetting" (
+CREATE TABLE IF NOT EXISTS "ReferralSetting" (
     "id" SERIAL NOT NULL,
     "isEnabled" BOOLEAN NOT NULL DEFAULT true,
     "rewardTarget" TEXT NOT NULL DEFAULT 'BOTH',
@@ -206,7 +193,7 @@ CREATE TABLE "ReferralSetting" (
 );
 
 -- CreateTable
-CREATE TABLE "Referral" (
+CREATE TABLE IF NOT EXISTS "Referral" (
     "id" SERIAL NOT NULL,
     "referrerId" INTEGER NOT NULL,
     "refereeId" INTEGER NOT NULL,
@@ -221,140 +208,121 @@ CREATE TABLE "Referral" (
 );
 
 -- CreateIndex
-CREATE INDEX "OrderFeedback_customerId_idx" ON "OrderFeedback"("customerId");
+CREATE INDEX IF NOT EXISTS "OrderFeedback_customerId_idx" ON "OrderFeedback"("customerId");
+CREATE INDEX IF NOT EXISTS "OrderFeedback_deliveryBoyId_idx" ON "OrderFeedback"("deliveryBoyId");
+CREATE INDEX IF NOT EXISTS "OrderFeedback_rating_idx" ON "OrderFeedback"("rating");
+CREATE UNIQUE INDEX IF NOT EXISTS "OrderFeedback_orderType_orderId_key" ON "OrderFeedback"("orderType", "orderId");
 
 -- CreateIndex
-CREATE INDEX "OrderFeedback_deliveryBoyId_idx" ON "OrderFeedback"("deliveryBoyId");
+CREATE UNIQUE INDEX IF NOT EXISTS "CustomerComplaint_complaintCode_key" ON "CustomerComplaint"("complaintCode");
+CREATE INDEX IF NOT EXISTS "CustomerComplaint_customerId_idx" ON "CustomerComplaint"("customerId");
+CREATE INDEX IF NOT EXISTS "CustomerComplaint_status_idx" ON "CustomerComplaint"("status");
+CREATE INDEX IF NOT EXISTS "CustomerComplaint_orderType_orderId_idx" ON "CustomerComplaint"("orderType", "orderId");
 
 -- CreateIndex
-CREATE INDEX "OrderFeedback_rating_idx" ON "OrderFeedback"("rating");
+CREATE INDEX IF NOT EXISTS "ComplaintStatusHistory_complaintId_idx" ON "ComplaintStatusHistory"("complaintId");
 
 -- CreateIndex
-CREATE UNIQUE INDEX "OrderFeedback_orderType_orderId_key" ON "OrderFeedback"("orderType", "orderId");
+CREATE INDEX IF NOT EXISTS "ChatConversation_participantRole_idx" ON "ChatConversation"("participantRole");
+CREATE INDEX IF NOT EXISTS "ChatConversation_lastMessageAt_idx" ON "ChatConversation"("lastMessageAt");
+CREATE UNIQUE INDEX IF NOT EXISTS "ChatConversation_participantId_participantRole_key" ON "ChatConversation"("participantId", "participantRole");
 
 -- CreateIndex
-CREATE UNIQUE INDEX "CustomerComplaint_complaintCode_key" ON "CustomerComplaint"("complaintCode");
+CREATE INDEX IF NOT EXISTS "ChatMessage_conversationId_idx" ON "ChatMessage"("conversationId");
+CREATE INDEX IF NOT EXISTS "ChatMessage_senderId_idx" ON "ChatMessage"("senderId");
+CREATE INDEX IF NOT EXISTS "ChatMessage_createdAt_idx" ON "ChatMessage"("createdAt");
 
 -- CreateIndex
-CREATE INDEX "CustomerComplaint_customerId_idx" ON "CustomerComplaint"("customerId");
+CREATE INDEX IF NOT EXISTS "DeliveryProof_orderType_orderId_idx" ON "DeliveryProof"("orderType", "orderId");
+CREATE INDEX IF NOT EXISTS "DeliveryProof_assignmentId_idx" ON "DeliveryProof"("assignmentId");
+CREATE INDEX IF NOT EXISTS "DeliveryProof_deliveryBoyId_idx" ON "DeliveryProof"("deliveryBoyId");
+CREATE INDEX IF NOT EXISTS "DeliveryProof_customerId_idx" ON "DeliveryProof"("customerId");
 
 -- CreateIndex
-CREATE INDEX "CustomerComplaint_status_idx" ON "CustomerComplaint"("status");
+CREATE UNIQUE INDEX IF NOT EXISTS "Coupon_code_key" ON "Coupon"("code");
+CREATE INDEX IF NOT EXISTS "Coupon_status_idx" ON "Coupon"("status");
+CREATE INDEX IF NOT EXISTS "Coupon_code_idx" ON "Coupon"("code");
 
 -- CreateIndex
-CREATE INDEX "CustomerComplaint_orderType_orderId_idx" ON "CustomerComplaint"("orderType", "orderId");
+CREATE INDEX IF NOT EXISTS "UserCoupon_userId_status_idx" ON "UserCoupon"("userId", "status");
+CREATE INDEX IF NOT EXISTS "UserCoupon_couponId_idx" ON "UserCoupon"("couponId");
 
 -- CreateIndex
-CREATE INDEX "ComplaintStatusHistory_complaintId_idx" ON "ComplaintStatusHistory"("complaintId");
+CREATE UNIQUE INDEX IF NOT EXISTS "Referral_refereeId_key" ON "Referral"("refereeId");
+CREATE INDEX IF NOT EXISTS "Referral_referrerId_idx" ON "Referral"("referrerId");
+CREATE INDEX IF NOT EXISTS "Referral_refereeId_idx" ON "Referral"("refereeId");
 
 -- CreateIndex
-CREATE INDEX "ChatConversation_participantRole_idx" ON "ChatConversation"("participantRole");
-
--- CreateIndex
-CREATE INDEX "ChatConversation_lastMessageAt_idx" ON "ChatConversation"("lastMessageAt");
-
--- CreateIndex
-CREATE UNIQUE INDEX "ChatConversation_participantId_participantRole_key" ON "ChatConversation"("participantId", "participantRole");
-
--- CreateIndex
-CREATE INDEX "ChatMessage_conversationId_idx" ON "ChatMessage"("conversationId");
-
--- CreateIndex
-CREATE INDEX "ChatMessage_senderId_idx" ON "ChatMessage"("senderId");
-
--- CreateIndex
-CREATE INDEX "ChatMessage_createdAt_idx" ON "ChatMessage"("createdAt");
-
--- CreateIndex
-CREATE INDEX "DeliveryProof_orderType_orderId_idx" ON "DeliveryProof"("orderType", "orderId");
-
--- CreateIndex
-CREATE INDEX "DeliveryProof_assignmentId_idx" ON "DeliveryProof"("assignmentId");
-
--- CreateIndex
-CREATE INDEX "DeliveryProof_deliveryBoyId_idx" ON "DeliveryProof"("deliveryBoyId");
-
--- CreateIndex
-CREATE INDEX "DeliveryProof_customerId_idx" ON "DeliveryProof"("customerId");
-
--- CreateIndex
-CREATE UNIQUE INDEX "Coupon_code_key" ON "Coupon"("code");
-
--- CreateIndex
-CREATE INDEX "Coupon_status_idx" ON "Coupon"("status");
-
--- CreateIndex
-CREATE INDEX "Coupon_code_idx" ON "Coupon"("code");
-
--- CreateIndex
-CREATE INDEX "UserCoupon_userId_status_idx" ON "UserCoupon"("userId", "status");
-
--- CreateIndex
-CREATE INDEX "UserCoupon_couponId_idx" ON "UserCoupon"("couponId");
-
--- CreateIndex
-CREATE UNIQUE INDEX "Referral_refereeId_key" ON "Referral"("refereeId");
-
--- CreateIndex
-CREATE INDEX "Referral_referrerId_idx" ON "Referral"("referrerId");
-
--- CreateIndex
-CREATE INDEX "Referral_refereeId_idx" ON "Referral"("refereeId");
-
--- CreateIndex
-CREATE UNIQUE INDEX "Admin_referralCode_key" ON "Admin"("referralCode");
+CREATE UNIQUE INDEX IF NOT EXISTS "Admin_referralCode_key" ON "Admin"("referralCode");
 
 -- AddForeignKey
+ALTER TABLE "Admin" DROP CONSTRAINT IF EXISTS "Admin_referredById_fkey";
 ALTER TABLE "Admin" ADD CONSTRAINT "Admin_referredById_fkey" FOREIGN KEY ("referredById") REFERENCES "Admin"("id") ON DELETE SET NULL ON UPDATE CASCADE;
 
 -- AddForeignKey
+ALTER TABLE "OrderFeedback" DROP CONSTRAINT IF EXISTS "OrderFeedback_customerId_fkey";
 ALTER TABLE "OrderFeedback" ADD CONSTRAINT "OrderFeedback_customerId_fkey" FOREIGN KEY ("customerId") REFERENCES "Admin"("id") ON DELETE CASCADE ON UPDATE CASCADE;
 
 -- AddForeignKey
+ALTER TABLE "OrderFeedback" DROP CONSTRAINT IF EXISTS "OrderFeedback_deliveryBoyId_fkey";
 ALTER TABLE "OrderFeedback" ADD CONSTRAINT "OrderFeedback_deliveryBoyId_fkey" FOREIGN KEY ("deliveryBoyId") REFERENCES "Admin"("id") ON DELETE SET NULL ON UPDATE CASCADE;
 
 -- AddForeignKey
+ALTER TABLE "CustomerComplaint" DROP CONSTRAINT IF EXISTS "CustomerComplaint_customerId_fkey";
 ALTER TABLE "CustomerComplaint" ADD CONSTRAINT "CustomerComplaint_customerId_fkey" FOREIGN KEY ("customerId") REFERENCES "Admin"("id") ON DELETE CASCADE ON UPDATE CASCADE;
 
 -- AddForeignKey
+ALTER TABLE "CustomerComplaint" DROP CONSTRAINT IF EXISTS "CustomerComplaint_deliveryBoyId_fkey";
 ALTER TABLE "CustomerComplaint" ADD CONSTRAINT "CustomerComplaint_deliveryBoyId_fkey" FOREIGN KEY ("deliveryBoyId") REFERENCES "Admin"("id") ON DELETE SET NULL ON UPDATE CASCADE;
 
 -- AddForeignKey
+ALTER TABLE "CustomerComplaint" DROP CONSTRAINT IF EXISTS "CustomerComplaint_assignedStaffId_fkey";
 ALTER TABLE "CustomerComplaint" ADD CONSTRAINT "CustomerComplaint_assignedStaffId_fkey" FOREIGN KEY ("assignedStaffId") REFERENCES "Admin"("id") ON DELETE SET NULL ON UPDATE CASCADE;
 
 -- AddForeignKey
+ALTER TABLE "ComplaintStatusHistory" DROP CONSTRAINT IF EXISTS "ComplaintStatusHistory_complaintId_fkey";
 ALTER TABLE "ComplaintStatusHistory" ADD CONSTRAINT "ComplaintStatusHistory_complaintId_fkey" FOREIGN KEY ("complaintId") REFERENCES "CustomerComplaint"("id") ON DELETE CASCADE ON UPDATE CASCADE;
 
 -- AddForeignKey
+ALTER TABLE "ComplaintStatusHistory" DROP CONSTRAINT IF EXISTS "ComplaintStatusHistory_changedById_fkey";
 ALTER TABLE "ComplaintStatusHistory" ADD CONSTRAINT "ComplaintStatusHistory_changedById_fkey" FOREIGN KEY ("changedById") REFERENCES "Admin"("id") ON DELETE SET NULL ON UPDATE CASCADE;
 
 -- AddForeignKey
+ALTER TABLE "ChatConversation" DROP CONSTRAINT IF EXISTS "ChatConversation_participantId_fkey";
 ALTER TABLE "ChatConversation" ADD CONSTRAINT "ChatConversation_participantId_fkey" FOREIGN KEY ("participantId") REFERENCES "Admin"("id") ON DELETE CASCADE ON UPDATE CASCADE;
 
 -- AddForeignKey
+ALTER TABLE "ChatConversation" DROP CONSTRAINT IF EXISTS "ChatConversation_adminId_fkey";
 ALTER TABLE "ChatConversation" ADD CONSTRAINT "ChatConversation_adminId_fkey" FOREIGN KEY ("adminId") REFERENCES "Admin"("id") ON DELETE SET NULL ON UPDATE CASCADE;
 
 -- AddForeignKey
+ALTER TABLE "ChatMessage" DROP CONSTRAINT IF EXISTS "ChatMessage_conversationId_fkey";
 ALTER TABLE "ChatMessage" ADD CONSTRAINT "ChatMessage_conversationId_fkey" FOREIGN KEY ("conversationId") REFERENCES "ChatConversation"("id") ON DELETE CASCADE ON UPDATE CASCADE;
 
 -- AddForeignKey
+ALTER TABLE "ChatMessage" DROP CONSTRAINT IF EXISTS "ChatMessage_senderId_fkey";
 ALTER TABLE "ChatMessage" ADD CONSTRAINT "ChatMessage_senderId_fkey" FOREIGN KEY ("senderId") REFERENCES "Admin"("id") ON DELETE CASCADE ON UPDATE CASCADE;
 
 -- AddForeignKey
+ALTER TABLE "UserCoupon" DROP CONSTRAINT IF EXISTS "UserCoupon_userId_fkey";
 ALTER TABLE "UserCoupon" ADD CONSTRAINT "UserCoupon_userId_fkey" FOREIGN KEY ("userId") REFERENCES "Admin"("id") ON DELETE CASCADE ON UPDATE CASCADE;
 
 -- AddForeignKey
+ALTER TABLE "UserCoupon" DROP CONSTRAINT IF EXISTS "UserCoupon_couponId_fkey";
 ALTER TABLE "UserCoupon" ADD CONSTRAINT "UserCoupon_couponId_fkey" FOREIGN KEY ("couponId") REFERENCES "Coupon"("id") ON DELETE CASCADE ON UPDATE CASCADE;
 
 -- AddForeignKey
+ALTER TABLE "ReferralSetting" DROP CONSTRAINT IF EXISTS "ReferralSetting_referrerCouponId_fkey";
 ALTER TABLE "ReferralSetting" ADD CONSTRAINT "ReferralSetting_referrerCouponId_fkey" FOREIGN KEY ("referrerCouponId") REFERENCES "Coupon"("id") ON DELETE SET NULL ON UPDATE CASCADE;
 
 -- AddForeignKey
+ALTER TABLE "ReferralSetting" DROP CONSTRAINT IF EXISTS "ReferralSetting_refereeCouponId_fkey";
 ALTER TABLE "ReferralSetting" ADD CONSTRAINT "ReferralSetting_refereeCouponId_fkey" FOREIGN KEY ("refereeCouponId") REFERENCES "Coupon"("id") ON DELETE SET NULL ON UPDATE CASCADE;
 
 -- AddForeignKey
+ALTER TABLE "Referral" DROP CONSTRAINT IF EXISTS "Referral_referrerId_fkey";
 ALTER TABLE "Referral" ADD CONSTRAINT "Referral_referrerId_fkey" FOREIGN KEY ("referrerId") REFERENCES "Admin"("id") ON DELETE CASCADE ON UPDATE CASCADE;
 
 -- AddForeignKey
+ALTER TABLE "Referral" DROP CONSTRAINT IF EXISTS "Referral_refereeId_fkey";
 ALTER TABLE "Referral" ADD CONSTRAINT "Referral_refereeId_fkey" FOREIGN KEY ("refereeId") REFERENCES "Admin"("id") ON DELETE CASCADE ON UPDATE CASCADE;
-
