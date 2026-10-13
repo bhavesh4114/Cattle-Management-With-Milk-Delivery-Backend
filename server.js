@@ -144,7 +144,7 @@ app.use((err, req, res, next) => {
     return next(err);
   }
 
-  return res.status(500).json({ message: "Internal server error", detail: err.message });
+  return res.status(500).json({ message: "Internal server error" });
 });
 
 if (require.main === module) {
