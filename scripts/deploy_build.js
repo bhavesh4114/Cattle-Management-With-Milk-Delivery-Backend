@@ -27,3 +27,4 @@ runCmd('node ./node_modules/prisma/build/index.js migrate resolve --rolled-back 
 runCmd('node ./node_modules/prisma/build/index.js migrate deploy');
 
 console.log('[deploy_build] Build and migrations completed successfully!');
+// 
