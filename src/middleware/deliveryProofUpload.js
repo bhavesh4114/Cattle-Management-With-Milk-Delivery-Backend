@@ -1,15 +1,28 @@
 const multer = require("multer");
 const path = require("path");
+const os = require("os");
 const fs = require("fs");
 
-const uploadDir = path.join(__dirname, "../../uploads/delivery-proofs");
-if (!fs.existsSync(uploadDir)) {
-  fs.mkdirSync(uploadDir, { recursive: true });
-}
+const getUploadDir = () => {
+  const isServerless = Boolean(process.env.VERCEL || process.env.AWS_LAMBDA_FUNCTION_NAME);
+  const dir = isServerless
+    ? path.join(os.tmpdir(), "uploads", "delivery-proofs")
+    : path.join(__dirname, "../../uploads", "delivery-proofs");
+
+  try {
+    if (!fs.existsSync(dir)) {
+      fs.mkdirSync(dir, { recursive: true });
+    }
+  } catch (err) {
+    console.warn("[deliveryProofUpload] Notice: could not create upload dir:", err.message);
+  }
+  return dir;
+};
 
 const storage = multer.diskStorage({
   destination: function (req, file, cb) {
-    cb(null, uploadDir);
+    const dir = getUploadDir();
+    cb(null, dir);
   },
   filename: function (req, file, cb) {
     const ext = path.extname(file.originalname).toLowerCase() || ".jpg";

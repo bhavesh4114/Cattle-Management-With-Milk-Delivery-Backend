@@ -78,7 +78,12 @@ app.use(cors({
   credentials: false,
 }));
 
+const os = require("os");
+const isServerlessEnv = Boolean(process.env.VERCEL || process.env.AWS_LAMBDA_FUNCTION_NAME);
 app.use("/uploads", express.static(path.join(__dirname, "uploads")));
+if (isServerlessEnv) {
+  app.use("/uploads", express.static(path.join(os.tmpdir(), "uploads")));
+}
 
 app.get("/", (req, res) => {
   res.json({ status: "ok", message: "Backend is running" });

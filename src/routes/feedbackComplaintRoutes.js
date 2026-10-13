@@ -7,16 +7,33 @@ const { authenticateAdmin } = require("../middleware/auth");
 
 const router = express.Router();
 
-// Ensure upload directory exists
-const uploadDir = path.join(__dirname, "../../uploads/complaints");
-if (!fs.existsSync(uploadDir)) {
-  fs.mkdirSync(uploadDir, { recursive: true });
-}
+const os = require("os");
+
+// Safely resolve upload directory (use os.tmpdir() on Vercel/serverless to avoid read-only /var/task)
+const getUploadDir = () => {
+  const isServerless = Boolean(process.env.VERCEL || process.env.AWS_LAMBDA_FUNCTION_NAME);
+  const dir = isServerless
+    ? path.join(os.tmpdir(), "uploads", "complaints")
+    : path.join(__dirname, "../../uploads/complaints");
+
+  try {
+    if (!fs.existsSync(dir)) {
+      fs.mkdirSync(dir, { recursive: true });
+    }
+  } catch (err) {
+    console.warn("[feedbackComplaintRoutes] Notice: could not create upload dir:", err.message);
+  }
+  return dir;
+};
+
+// Ensure directory exists without crashing on module import
+const uploadDir = getUploadDir();
 
 // Configure multer for complaint attachments
 const storage = multer.diskStorage({
   destination: function (req, file, cb) {
-    cb(null, uploadDir);
+    const dir = getUploadDir();
+    cb(null, dir);
   },
   filename: function (req, file, cb) {
     const ext = path.extname(file.originalname).toLowerCase();
