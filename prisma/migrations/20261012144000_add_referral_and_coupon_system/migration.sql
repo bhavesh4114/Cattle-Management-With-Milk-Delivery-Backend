@@ -25,8 +25,8 @@ ALTER TABLE "DeliveryBoyProfile" ALTER COLUMN "updatedAt" DROP DEFAULT;
 ALTER TABLE "DeliveryHistory" ALTER COLUMN "updatedAt" DROP DEFAULT;
 
 -- AlterTable
-ALTER TABLE "Item" DROP COLUMN "category",
-DROP COLUMN "quantity";
+ALTER TABLE "Item" DROP COLUMN IF EXISTS "category",
+DROP COLUMN IF EXISTS "quantity";
 
 -- AlterTable
 ALTER TABLE "MilkDeliveryRequest" ADD COLUMN     "acceptedQuantity" DOUBLE PRECISION,
@@ -39,17 +39,17 @@ ALTER COLUMN "status" SET DEFAULT 'EXTRA_REQUESTED',
 ALTER COLUMN "updatedAt" DROP DEFAULT;
 
 -- AlterTable
-ALTER TABLE "MilkRecord" DROP COLUMN "liters",
-DROP COLUMN "milkedAt",
-DROP COLUMN "shift";
+ALTER TABLE "MilkRecord" DROP COLUMN IF EXISTS "liters",
+DROP COLUMN IF EXISTS "milkedAt",
+DROP COLUMN IF EXISTS "shift";
 
 -- AlterTable
-ALTER TABLE "Order" DROP COLUMN "amount",
-DROP COLUMN "customer",
-DROP COLUMN "itemName",
-DROP COLUMN "orderedAt",
-DROP COLUMN "quantity",
-DROP COLUMN "status",
+ALTER TABLE "Order" DROP COLUMN IF EXISTS "amount",
+DROP COLUMN IF EXISTS "customer",
+DROP COLUMN IF EXISTS "itemName",
+DROP COLUMN IF EXISTS "orderedAt",
+DROP COLUMN IF EXISTS "quantity",
+DROP COLUMN IF EXISTS "status",
 ALTER COLUMN "vendorName" DROP DEFAULT;
 
 -- CreateTable
