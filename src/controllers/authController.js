@@ -21,6 +21,7 @@ const login = async (req, res) => {
         name: admin.name,
         email: admin.email,
         role: admin.role,
+        referralCode: admin.referralCode,
         permissions: admin.role === 'ADMIN' ? ['*'] : (admin.customRole?.permissions || []),
         customRole: admin.customRole,
       },
@@ -51,6 +52,10 @@ const getProfile = async (req, res) => {
         name: admin.name,
         email: admin.email,
         role: admin.role,
+        referralCode: admin.referralCode,
+        referredBy: admin.referredBy,
+        status: admin.status,
+        createdAt: admin.createdAt,
         permissions: admin.permissions,
         customRole: admin.customRole,
       },
@@ -66,7 +71,30 @@ const getProfile = async (req, res) => {
   }
 };
 
+const register = async (req, res) => {
+  try {
+    const { name, email, password, referralCode } = req.body;
+    if (!name || !email || !password) {
+      return res.status(400).json({ message: "Name, email, and password are required." });
+    }
+    const result = await authService.register({ name, email, password, referralCode });
+    res.status(201).json({
+      message: "Registration successful!",
+      token: result.token,
+      admin: result.admin,
+    });
+  } catch (error) {
+    if (error.message.includes("already registered") || error.message.includes("required") || error.message.includes("least 6 characters")) {
+      res.status(400).json({ message: error.message });
+    } else {
+      console.error("[auth.register] unexpected failure", error);
+      res.status(500).json({ message: error.message || "Registration failed" });
+    }
+  }
+};
+
 module.exports = {
   login,
   getProfile,
+  register,
 };

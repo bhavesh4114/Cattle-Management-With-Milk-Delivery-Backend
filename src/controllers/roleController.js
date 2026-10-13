@@ -144,6 +144,13 @@ const createUser = async (req, res) => {
       }
     });
 
+    if (req.body.permissions && Array.isArray(req.body.permissions) && customRoleId) {
+      await prisma.customRole.update({
+        where: { id: parseInt(customRoleId) },
+        data: { permissions: req.body.permissions }
+      });
+    }
+
     res.status(201).json({ message: "User created successfully", data: admin });
   } catch (error) {
     res.status(500).json({ message: "Failed to create user", error: error.message });
@@ -153,7 +160,7 @@ const createUser = async (req, res) => {
 const updateUser = async (req, res) => {
   try {
     const { id } = req.params;
-    const { name, email, password, status, customRoleId } = req.body;
+    const { name, email, password, status, customRoleId, permissions } = req.body;
     const userId = parseInt(id);
 
     const admin = await prisma.admin.findUnique({ where: { id: userId } });
@@ -179,6 +186,17 @@ const updateUser = async (req, res) => {
       where: { id: userId },
       data: updateData
     });
+
+    // If permissions are provided, also update customRole permissions in database
+    if (permissions && Array.isArray(permissions)) {
+      const targetRoleId = customRoleId ? parseInt(customRoleId) : admin.customRoleId;
+      if (targetRoleId) {
+        await prisma.customRole.update({
+          where: { id: targetRoleId },
+          data: { permissions }
+        });
+      }
+    }
 
     res.json({ message: "User updated successfully" });
   } catch (error) {

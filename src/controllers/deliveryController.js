@@ -297,17 +297,22 @@ exports.getMyDeliveries = async (req, res) => {
             ];
         }
 
+        where.orderType = { not: 'extra' };
         const assignments = await prisma.deliveryAssignment.findMany({
             where, orderBy: { createdAt: 'desc' }
         });
         const enriched = await Promise.all(assignments.map(async (a) => {
             let order = null;
             if (a.orderType === 'trial') {
-                order = await prisma.milkTrial.findUnique({ where: { id: a.orderId }, include: { product: true } });
+                order = await prisma.milkTrial.findUnique({
+                    where: { id: a.orderId },
+                    include: { product: true, admin: { select: { id: true, name: true, email: true, doorQrToken: true } } }
+                });
+                if (order) order.doorQrToken = order.admin?.doorQrToken || null;
             } else if (a.orderType === 'extra') {
                 const req = await prisma.milkDeliveryRequest.findUnique({
                     where: { id: a.orderId },
-                    include: { customer: true, subscription: { include: { product: true } } }
+                    include: { customer: { select: { id: true, name: true, email: true, doorQrToken: true } }, subscription: { include: { product: true } } }
                 });
                 if (req) {
                     const exactAccepted = req.acceptedQuantity !== null && req.acceptedQuantity !== undefined ? req.acceptedQuantity : req.extraQuantity;
@@ -325,11 +330,16 @@ exports.getMyDeliveries = async (req, res) => {
                         deliveryStatus: a.deliveryStatus,
                         deliveryDate: req.deliveryDate,
                         isExtraDelivery: true,
-                        acceptedQuantity: exactAccepted
+                        acceptedQuantity: exactAccepted,
+                        doorQrToken: req.customer?.doorQrToken || null
                     };
                 }
             } else {
-                order = await prisma.milkSubscription.findUnique({ where: { id: a.orderId }, include: { product: true } });
+                order = await prisma.milkSubscription.findUnique({
+                    where: { id: a.orderId },
+                    include: { product: true, admin: { select: { id: true, name: true, email: true, doorQrToken: true } } }
+                });
+                if (order) order.doorQrToken = order.admin?.doorQrToken || null;
             }
             if (!order) return { ...a, order: null };
 
@@ -452,13 +462,12 @@ exports.updateDeliveryStatus = async (req, res) => {
             extraData.productCollectedAt = assignment.productCollectedAt || now;
             extraData.deliveryStatus = 'PRODUCT_COLLECTED';
         } else if (normTarget === 'OUT_FOR_DELIVERY') {
-            // Must have collected product first
-            if (!assignment.productCollectedAt && assignment.deliveryStatus !== 'PRODUCT_COLLECTED') {
-                return res.status(400).json({
-                    message: 'Cannot start delivery before product is collected from farm/store.'
-                });
-            }
+            const startTime = assignment.deliveryStartTime || now;
+            extraData.productCollectedAt = assignment.productCollectedAt || now;
             extraData.outForDeliveryAt = assignment.outForDeliveryAt || now;
+            extraData.deliveryStartTime = startTime;
+            extraData.estimatedDeliveryTime = assignment.estimatedDeliveryTime || new Date(startTime.getTime() + 30 * 60 * 1000);
+            extraData.delayAlertSentAt = null;
             extraData.deliveryStatus = 'OUT_FOR_DELIVERY';
         } else if (normTarget === 'ARRIVED') {
             // Must have been out for delivery first
@@ -491,6 +500,24 @@ exports.updateDeliveryStatus = async (req, res) => {
             await prisma.milkDeliveryRequest.update({ where: { id: assignment.orderId }, data: { deliveryStatus: finalStatus } });
         } else {
             await prisma.milkSubscription.update({ where: { id: assignment.orderId }, data: { deliveryStatus: finalStatus } });
+            if (assignment.deliveryDate) {
+                const startOfDay = new Date(assignment.deliveryDate);
+                startOfDay.setUTCHours(0, 0, 0, 0);
+                const endOfDay = new Date(assignment.deliveryDate);
+                endOfDay.setUTCHours(23, 59, 59, 999);
+
+                await prisma.milkDeliveryRequest.updateMany({
+                    where: {
+                        subscriptionId: assignment.orderId,
+                        deliveryDate: { gte: startOfDay, lte: endOfDay },
+                        status: { notIn: ['CANCELLED', 'EXTRA_REQUEST_REJECTED'] }
+                    },
+                    data: {
+                        deliveryStatus: finalStatus,
+                        ...(finalStatus === 'Delivered' ? { status: 'DELIVERED' } : {})
+                    }
+                });
+            }
         }
 
         // Trigger notifications based on lifecycle status
@@ -512,12 +539,26 @@ exports.updateDeliveryStatus = async (req, res) => {
                 }
 
                 if (finalStatus === 'OUT_FOR_DELIVERY' || normTarget === 'OUT_FOR_DELIVERY') {
+                    const boy = await prisma.admin.findUnique({
+                        where: { id: deliveryBoyId },
+                        include: { deliveryProfile: true }
+                    });
+                    const boyName = boy?.name || 'Delivery Partner';
+                    const boyPhone = boy?.deliveryProfile?.mobile || boy?.mobile || '';
+                    const startTime = extraData.deliveryStartTime || now;
+                    const etaTime = extraData.estimatedDeliveryTime || new Date(startTime.getTime() + 30 * 60 * 1000);
+
                     await notificationService.notifyOutForDelivery({
                         orderId: assignment.orderId,
                         orderType: assignment.orderType,
                         customerUserId,
                         boyId: deliveryBoyId,
-                        adminId
+                        boyName,
+                        boyPhone,
+                        adminId,
+                        deliveryStartTime: startTime,
+                        estimatedDeliveryTime: etaTime,
+                        estimatedMinutes: 30
                     });
                 } else if (finalStatus === 'ARRIVED' || normTarget === 'ARRIVED') {
                     await notificationService.notifyDeliveryArrived({
@@ -868,6 +909,12 @@ exports.getOrderTrackingStatus = async (req, res) => {
             }
         ];
 
+        const deliveryProofs = await prisma.deliveryProof.findMany({
+            where: { orderType, orderId: orderIdInt },
+            orderBy: { capturedAt: 'desc' },
+            take: 10
+        });
+
         res.json({
             orderId: order.id,
             orderType,
@@ -896,11 +943,35 @@ exports.getOrderTrackingStatus = async (req, res) => {
                 assignedAt: assignment?.assignedAt || assignment?.createdAt || null,
                 productCollectedAt: assignment?.productCollectedAt || null,
                 outForDeliveryAt: assignment?.outForDeliveryAt || null,
+                deliveryStartTime: assignment?.deliveryStartTime || assignment?.outForDeliveryAt || null,
+                estimatedDeliveryTime: assignment?.estimatedDeliveryTime || null,
+                formattedEta: assignment?.estimatedDeliveryTime ? new Date(assignment.estimatedDeliveryTime).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: true }) : null,
                 arrivedAt: assignment?.arrivedAt || null,
                 deliveryConfirmedAt: assignment?.deliveryConfirmedAt || null,
-                customerConfirmedAt: assignment?.customerConfirmedAt || null
+                customerConfirmedAt: assignment?.customerConfirmedAt || null,
+                deliveryCompletedAt: assignment?.deliveryCompletedAt || assignment?.deliveredAt || null,
+                delayAlertSentAt: assignment?.delayAlertSentAt || null,
+                isDelayed: Boolean(assignment?.estimatedDeliveryTime && new Date() > new Date(assignment.estimatedDeliveryTime) && !assignment?.deliveredAt && !assignment?.deliveryCompletedAt)
             },
+            formattedEta: assignment?.estimatedDeliveryTime ? new Date(assignment.estimatedDeliveryTime).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: true }) : null,
+            estimatedDeliveryTime: assignment?.estimatedDeliveryTime || null,
+            deliveryStartTime: assignment?.deliveryStartTime || assignment?.outForDeliveryAt || null,
+            deliveryCompletedAt: assignment?.deliveryCompletedAt || assignment?.deliveredAt || null,
+            isDelayed: Boolean(assignment?.estimatedDeliveryTime && new Date() > new Date(assignment.estimatedDeliveryTime) && !assignment?.deliveredAt && !assignment?.deliveryCompletedAt),
             canCustomerConfirm: ['DELIVERY_PENDING_CUSTOMER_CONFIRMATION', 'AWAITING_USER_CONFIRMATION', 'ARRIVED', 'OUT_FOR_DELIVERY'].includes((assignment?.deliveryStatus || rawDeliveryStatus || '').toUpperCase().replace(/ /g, '_')) && !['Delivered', 'DELIVERED'].includes(rawDeliveryStatus),
+            deliveryProof: assignment?.deliveryProof || deliveryProofs[0]?.photoUrl || null,
+            deliveryProofs: deliveryProofs.map(p => ({
+                id: p.id,
+                photoUrl: p.photoUrl,
+                productName: p.productName || p.itemLabel,
+                itemLabel: p.itemLabel,
+                quantity: p.quantity,
+                unit: p.unit,
+                status: p.status,
+                capturedAt: p.capturedAt,
+                deliveryBoyName: p.deliveryBoyName,
+                customerName: p.customerName
+            })),
             timeline,
             dailySchedule,
             billingSummary
@@ -918,8 +989,18 @@ function normalizeOrderType(orderType) {
     return orderType === 'subscription' ? 'sub' : orderType;
 }
 
-const ACTIVE_DELIVERY_STATUSES = ['Assigned', 'Accepted', 'Out for Delivery', 'QR_SCANNED', 'AWAITING_USER_CONFIRMATION', 'PARTIALLY_DELIVERED'];
-const TERMINAL_DELIVERY_STATUSES = ['Delivered', 'CANCELLED', 'Cancelled', 'Rejected'];
+const ACTIVE_DELIVERY_STATUSES = [
+    'Assigned', 'ASSIGNED',
+    'Accepted', 'ACCEPTED',
+    'Product Collected', 'PRODUCT_COLLECTED',
+    'Out for Delivery', 'OUT_FOR_DELIVERY',
+    'Arrived', 'ARRIVED',
+    'QR_SCANNED',
+    'AWAITING_USER_CONFIRMATION',
+    'DELIVERY_PENDING_CUSTOMER_CONFIRMATION',
+    'PARTIALLY_DELIVERED'
+];
+const TERMINAL_DELIVERY_STATUSES = ['Delivered', 'DELIVERED', 'CANCELLED', 'Cancelled', 'Rejected', 'REJECTED'];
 
 async function getOrder(orderType, orderId) {
     const normalized = normalizeOrderType(orderType);
@@ -1021,7 +1102,7 @@ async function findCustomerActiveAssignments(userId, deliveryBoyId) {
     const matched = [];
     for (const assignment of assignments) {
         const order = await getOrder(assignment.orderType, assignment.orderId);
-        if (!order || order.userId !== userId) continue;
+        if (!order || (order.userId !== userId && order.adminId !== userId)) continue;
         if (TERMINAL_DELIVERY_STATUSES.includes(order.deliveryStatus) || TERMINAL_DELIVERY_STATUSES.includes(order.status)) continue;
         matched.push({ assignment, order });
     }
@@ -1036,19 +1117,47 @@ exports.generateDailyDeliveries = async (req, res) => {
 
 exports.scanQRCode = async (req, res) => {
     try {
-        const { qrToken, qrCode } = req.body;
-        const token = qrToken || qrCode;
+        const { qrToken, qrCode, assignmentId } = req.body;
+        const token = (qrToken || qrCode || '').trim();
         const deliveryBoyId = req.admin.id;
 
-        if (!token) return res.status(400).json({ message: 'QR token is required.' });
+        let user = null;
+        if (token) {
+            user = await prisma.admin.findUnique({
+                where: { doorQrToken: token },
+                select: { id: true, name: true, email: true, doorQrToken: true, isQrEnabled: true },
+            });
+        }
 
-        const user = await prisma.admin.findUnique({
-            where: { doorQrToken: token },
-            select: { id: true, name: true, email: true, doorQrToken: true, isQrEnabled: true },
-        });
+        if (!user && assignmentId) {
+            const assign = await prisma.deliveryAssignment.findUnique({
+                where: { id: parseInt(assignmentId, 10) }
+            });
+            if (assign) {
+                const order = await getOrder(assign.orderType, assign.orderId);
+                const targetUserId = order?.userId || order?.adminId;
+                if (targetUserId) {
+                    user = await prisma.admin.findUnique({
+                        where: { id: targetUserId },
+                        select: { id: true, name: true, email: true, doorQrToken: true, isQrEnabled: true }
+                    });
+                }
+            }
+        }
 
-        if (!user) return res.status(404).json({ message: 'Invalid QR code.' });
+        if (!user && !token) return res.status(400).json({ message: 'QR token is required.' });
+        if (!user) return res.status(404).json({ message: 'Invalid QR code or token.' });
         if (!user.isQrEnabled) return res.status(400).json({ message: 'This QR code is disabled.' });
+
+        if (!user.doorQrToken) {
+            const crypto = require('crypto');
+            const newToken = crypto.randomBytes(32).toString('hex');
+            user = await prisma.admin.update({
+                where: { id: user.id },
+                data: { doorQrToken: newToken, isQrEnabled: true },
+                select: { id: true, name: true, email: true, doorQrToken: true, isQrEnabled: true }
+            });
+        }
 
         const matches = await findCustomerActiveAssignments(user.id, deliveryBoyId);
         if (matches.length === 0) {
@@ -1100,7 +1209,7 @@ exports.scanQRCode = async (req, res) => {
 
 exports.requestDeliveryConfirmation = async (req, res) => {
     try {
-        const { itemIds } = req.body;
+        const { itemIds, photoUrl, photoProofs } = req.body;
         const orderId = parseInt(req.params.orderId, 10);
         const orderType = normalizeOrderType(req.body.orderType || req.query.orderType || 'sub');
         const deliveryBoyId = req.admin.id;
@@ -1123,21 +1232,54 @@ exports.requestDeliveryConfirmation = async (req, res) => {
             return res.status(400).json({ message: 'Selected items do not belong to this order.' });
         }
 
+        // Proof photo resolution: required for each selected delivered item
+        const resolvedPhotoUrl = photoUrl || (photoProofs && (photoProofs[assignment.id] || photoProofs[String(assignment.id)] || photoProofs[orderId] || photoProofs[String(orderId)]));
+        if (!resolvedPhotoUrl) {
+            return res.status(400).json({ message: 'Delivery proof photo is required for selected product before confirmation.' });
+        }
+
         const selectedItems = [await buildOrderItem(assignment, order)];
         await prisma.$transaction(async (tx) => {
             await tx.deliveryAssignment.update({
                 where: { id: assignment.id },
-                data: { selectedItems, deliveryStatus: 'AWAITING_USER_CONFIRMATION' },
+                data: {
+                    selectedItems,
+                    deliveryProof: resolvedPhotoUrl,
+                    deliveryStatus: 'AWAITING_USER_CONFIRMATION'
+                },
             });
             await updateOrderDeliveryStatus(tx, orderType, orderId, 'AWAITING_USER_CONFIRMATION');
+
+            // Persist structured proof record
+            await tx.deliveryProof.create({
+                data: {
+                    orderType,
+                    orderId,
+                    assignmentId: assignment.id,
+                    customerId: order.userId,
+                    customerName: order.customerName || null,
+                    deliveryBoyId,
+                    deliveryBoyName: assignment.deliveryBoy?.name || null,
+                    productId: order.productId || null,
+                    productName: selectedItems[0]?.label || null,
+                    itemLabel: selectedItems[0]?.label || null,
+                    quantity: selectedItems[0]?.quantity !== undefined && selectedItems[0]?.quantity !== null ? parseFloat(selectedItems[0].quantity) : null,
+                    unit: selectedItems[0]?.unit || 'L',
+                    photoUrl: resolvedPhotoUrl,
+                    qrToken: assignment.qrCode || null,
+                    status: 'AWAITING_USER_CONFIRMATION',
+                    capturedAt: new Date(),
+                }
+            });
+
             await tx.userAlert.create({
                 data: {
                     userId: order.userId,
                     type: 'DELIVERY_CONFIRMATION',
                     orderType,
                     orderId,
-                    message: `Delivery boy ${assignment.deliveryBoy?.name || ''} has arrived. Please confirm delivery for ${selectedItems.map(i => i.label).join(', ')}.`,
-                    metadata: { deliveryBoyId, deliveryBoyName: assignment.deliveryBoy?.name, selectedItems },
+                    message: `Delivery boy ${assignment.deliveryBoy?.name || ''} has arrived with delivery photo proof. Please confirm delivery for ${selectedItems.map(i => i.label).join(', ')}.`,
+                    metadata: { deliveryBoyId, deliveryBoyName: assignment.deliveryBoy?.name, selectedItems, deliveryProof: resolvedPhotoUrl },
                 },
             });
             await tx.deliveryHistory.create({
@@ -1150,12 +1292,12 @@ exports.requestDeliveryConfirmation = async (req, res) => {
                     itemsSelected: selectedItems,
                     status: 'AWAITING_USER_CONFIRMATION',
                     action: 'REQUESTED_USER_CONFIRMATION',
-                    metadata: { assignmentId: assignment.id },
+                    metadata: { assignmentId: assignment.id, deliveryProof: resolvedPhotoUrl },
                 },
             });
         });
 
-        res.json({ message: 'User confirmation requested.', status: 'AWAITING_USER_CONFIRMATION', selectedItems });
+        res.json({ message: 'User confirmation requested.', status: 'AWAITING_USER_CONFIRMATION', selectedItems, deliveryProof: resolvedPhotoUrl });
     } catch (error) { res.status(500).json({ message: 'Server error', error: error.message }); }
 };
 
@@ -1206,6 +1348,7 @@ exports.confirmDelivery = async (req, res) => {
                     customerConfirmedAt: now,
                     userConfirmedAt: now,
                     deliveredAt: now,
+                    deliveryCompletedAt: now,
                     isActive: false,
                 },
             });
@@ -1225,7 +1368,38 @@ exports.confirmDelivery = async (req, res) => {
                         deliveryStatus: 'Delivered'
                     }
                 });
+
+                if (assignment.deliveryDate) {
+                    const startOfDay = new Date(assignment.deliveryDate);
+                    startOfDay.setUTCHours(0, 0, 0, 0);
+                    const endOfDay = new Date(assignment.deliveryDate);
+                    endOfDay.setUTCHours(23, 59, 59, 999);
+
+                    await tx.milkDeliveryRequest.updateMany({
+                        where: {
+                            subscriptionId: orderId,
+                            deliveryDate: { gte: startOfDay, lte: endOfDay },
+                            status: { notIn: ['CANCELLED', 'EXTRA_REQUEST_REJECTED'] }
+                        },
+                        data: {
+                            status: 'DELIVERED',
+                            deliveryStatus: 'Delivered'
+                        }
+                    });
+                }
             }
+
+            // Mark delivery proofs as VERIFIED
+            await tx.deliveryProof.updateMany({
+                where: {
+                    orderType,
+                    orderId,
+                    assignmentId: assignment.id,
+                },
+                data: {
+                    status: 'VERIFIED'
+                }
+            });
 
             await tx.deliveryHistory.create({
                 data: {
@@ -1239,7 +1413,11 @@ exports.confirmDelivery = async (req, res) => {
                     deliveredAt: now,
                     status: 'Delivered',
                     action: 'USER_CONFIRMED_DELIVERY',
-                    metadata: { assignmentId: assignment.id, deliveryBoyName: assignment.deliveryBoy?.name },
+                    metadata: {
+                        assignmentId: assignment.id,
+                        deliveryBoyName: assignment.deliveryBoy?.name,
+                        deliveryProof: assignment.deliveryProof || null
+                    },
                 },
             });
 
@@ -1633,5 +1811,110 @@ exports.rescheduleByOrder = async (req, res) => {
     } catch (error) {
         console.error("Reschedule by order error:", error);
         res.status(500).json({ message: "Server error", error: error.message });
+    }
+};
+
+exports.triggerDelayCheck = async (req, res) => {
+    try {
+        const deliveryDelayService = require('../services/deliveryDelayService');
+        const graceMins = req.body?.gracePeriodMins !== undefined ? parseFloat(req.body.gracePeriodMins) : 5;
+        const result = await deliveryDelayService.checkAndAlertDelayedDeliveries({ gracePeriodMins: graceMins });
+        res.json(result);
+    } catch (error) {
+        res.status(500).json({ message: 'Server error', error: error.message });
+    }
+};
+
+exports.getDelayedDeliveries = async (req, res) => {
+    try {
+        const now = new Date();
+        const delayed = await prisma.deliveryAssignment.findMany({
+            where: {
+                isActive: true,
+                deliveryStatus: {
+                    notIn: ['Delivered', 'DELIVERED', 'Cancelled', 'CANCELLED', 'REJECTED']
+                },
+                estimatedDeliveryTime: {
+                    lt: now
+                },
+                deliveryCompletedAt: null,
+                deliveredAt: null
+            },
+            include: {
+                deliveryBoy: {
+                    include: { deliveryProfile: true }
+                }
+            },
+            orderBy: { estimatedDeliveryTime: 'asc' }
+        });
+
+        const formatted = await Promise.all(delayed.map(async (d) => {
+            let customerName = 'Customer';
+            let address = '';
+            let phone = '';
+            if (d.orderType === 'trial') {
+                const t = await prisma.milkTrial.findUnique({ where: { id: d.orderId } });
+                if (t) { customerName = t.customerName; address = t.address; phone = t.phone; }
+            } else if (d.orderType === 'extra') {
+                const r = await prisma.milkDeliveryRequest.findUnique({ where: { id: d.orderId }, include: { customer: true, subscription: true } });
+                if (r) { customerName = r.customer?.name || 'Customer'; address = r.subscription?.address; phone = r.subscription?.phone; }
+            } else {
+                const s = await prisma.milkSubscription.findUnique({ where: { id: d.orderId } });
+                if (s) { customerName = s.customerName; address = s.address; phone = s.phone; }
+            }
+
+            const delayMinutes = Math.max(1, Math.round((now.getTime() - new Date(d.estimatedDeliveryTime).getTime()) / (1000 * 60)));
+
+            return {
+                id: d.id,
+                orderId: d.orderId,
+                orderType: d.orderType,
+                customerName,
+                address,
+                phone,
+                deliveryBoyName: d.deliveryBoy?.name,
+                deliveryBoyPhone: d.deliveryBoy?.deliveryProfile?.mobile || d.deliveryBoy?.mobile,
+                deliveryStartTime: d.deliveryStartTime,
+                estimatedDeliveryTime: d.estimatedDeliveryTime,
+                delayMinutes,
+                deliveryStatus: d.deliveryStatus,
+                delayAlertSentAt: d.delayAlertSentAt
+            };
+        }));
+
+        res.json(formatted);
+    } catch (error) {
+        res.status(500).json({ message: 'Server error', error: error.message });
+    }
+};
+
+exports.uploadDeliveryProof = async (req, res) => {
+    try {
+        if (!req.file) {
+            return res.status(400).json({ message: 'No photo file provided.' });
+        }
+        const photoUrl = `/uploads/delivery-proofs/${req.file.filename}`;
+        res.status(200).json({
+            message: 'Delivery proof photo uploaded successfully.',
+            photoUrl,
+            filename: req.file.filename,
+            size: req.file.size
+        });
+    } catch (error) {
+        res.status(500).json({ message: 'Failed to upload proof photo.', error: error.message });
+    }
+};
+
+exports.getDeliveryProofs = async (req, res) => {
+    try {
+        const orderId = parseInt(req.params.orderId, 10);
+        const orderType = normalizeOrderType(req.query.orderType || req.params.orderType || 'sub');
+        const proofs = await prisma.deliveryProof.findMany({
+            where: { orderId, orderType },
+            orderBy: { capturedAt: 'desc' }
+        });
+        res.json(proofs);
+    } catch (error) {
+        res.status(500).json({ message: 'Server error', error: error.message });
     }
 };

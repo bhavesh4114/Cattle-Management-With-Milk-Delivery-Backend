@@ -1,5 +1,6 @@
 const prisma = require("../config/db");
 const notificationService = require("./notificationService");
+const deliveryAutoAssignService = require("./deliveryAutoAssignService");
 
 let tableChecked = false;
 async function ensureTableExists() {
@@ -291,10 +292,58 @@ async function createRequest(customerId, payload) {
   return newRequest;
 }
 
+// ─── Sync Helper: Align Extra Request Delivery Status with Subscription ─────
+async function syncRequestDeliveryStatus(r) {
+  if (!r) return r;
+  if (r.status === "DELIVERED" || r.status === "CANCELLED" || r.status === "EXTRA_REQUEST_REJECTED") {
+    return r;
+  }
+  if (!r.subscriptionId && !r.customerId) return r;
+
+  const dDate = new Date(r.deliveryDate);
+  const startOfDay = new Date(dDate);
+  startOfDay.setUTCHours(0, 0, 0, 0);
+  const endOfDay = new Date(dDate);
+  endOfDay.setUTCHours(23, 59, 59, 999);
+
+  const assignment = await prisma.deliveryAssignment.findFirst({
+    where: {
+      orderType: { in: ["sub", "subscription"] },
+      ...(r.subscriptionId ? { orderId: r.subscriptionId } : {}),
+      deliveryDate: { gte: startOfDay, lte: endOfDay },
+    },
+    orderBy: { updatedAt: "desc" },
+  });
+
+  if (assignment) {
+    const isDelivered =
+      assignment.deliveryStatus === "Delivered" ||
+      assignment.deliveryStatus === "DELIVERED" ||
+      assignment.customerConfirmedAt != null ||
+      assignment.deliveredAt != null;
+
+    if (isDelivered) {
+      await prisma.milkDeliveryRequest.update({
+        where: { id: r.id },
+        data: { status: "DELIVERED", deliveryStatus: "Delivered" },
+      });
+      r.status = "DELIVERED";
+      r.deliveryStatus = "Delivered";
+    } else if (assignment.deliveryStatus && assignment.deliveryStatus !== r.deliveryStatus) {
+      await prisma.milkDeliveryRequest.update({
+        where: { id: r.id },
+        data: { deliveryStatus: assignment.deliveryStatus },
+      });
+      r.deliveryStatus = assignment.deliveryStatus;
+    }
+  }
+  return r;
+}
+
 // ─── 3. Get Customer's Own Requests ──────────────────────────────────────────
 async function getCustomerRequests(customerId) {
   await ensureTableExists();
-  return prisma.milkDeliveryRequest.findMany({
+  const list = await prisma.milkDeliveryRequest.findMany({
     where: { customerId },
     include: {
       approvedBy: { select: { id: true, name: true } },
@@ -302,6 +351,12 @@ async function getCustomerRequests(customerId) {
     },
     orderBy: [{ deliveryDate: "desc" }, { createdAt: "desc" }],
   });
+
+  for (const req of list) {
+    await syncRequestDeliveryStatus(req);
+  }
+
+  return list;
 }
 
 // ─── 4. Update Pending Request (Customer) ────────────────────────────────────
@@ -440,6 +495,7 @@ async function getAllRequests(filters = {}) {
 
   const enriched = await Promise.all(
     list.map(async (r) => {
+      await syncRequestDeliveryStatus(r);
       let regularBoy = null;
       let regularBoyId = r.subscription?.deliveryBoyId;
       if (!regularBoyId && r.subscriptionId) {
@@ -626,12 +682,60 @@ async function customerRespondToOffer(requestId, customerId, payload) {
   if (decision === "ACCEPT") {
     const acceptedQty = request.offeredQuantity !== null && request.offeredQuantity !== undefined ? request.offeredQuantity : request.extraQuantity;
     const totalQty = parseFloat(((request.regularQuantity || 0) + acceptedQty).toFixed(2));
+
+    // Automatically link to regular subscription's delivery boy
+    const sub = request.subscription || (request.subscriptionId ? await prisma.milkSubscription.findUnique({ where: { id: request.subscriptionId } }) : null);
+    let boyId = sub?.deliveryBoyId || null;
+    if (!boyId && sub?.pincode) {
+      const bestBoy = await deliveryAutoAssignService.findBestDeliveryBoy(sub.pincode);
+      if (bestBoy) {
+        boyId = bestBoy.id;
+        await prisma.milkSubscription.update({
+          where: { id: sub.id },
+          data: { deliveryBoyId: boyId, deliveryStatus: 'Assigned' }
+        });
+      }
+    }
+
+    const targetDate = parseDateUtc(request.deliveryDate);
+
+    // Ensure the regular subscription assignment exists for this delivery date
+    if (boyId && sub) {
+      const existingSubAssignment = await prisma.deliveryAssignment.findFirst({
+        where: {
+          orderType: 'sub',
+          orderId: sub.id,
+          deliveryDate: targetDate,
+        }
+      });
+      if (!existingSubAssignment) {
+        await prisma.deliveryAssignment.create({
+          data: {
+            orderType: 'sub',
+            orderId: sub.id,
+            deliveryBoyId: boyId,
+            assignedById: request.approvedById || 1,
+            deliveryStatus: 'Assigned',
+            deliveryDate: targetDate,
+            isActive: true,
+          }
+        });
+      }
+    }
+
+    // Ensure NO standalone "extra" assignment exists so it never appears as a separate card
+    await prisma.deliveryAssignment.deleteMany({
+      where: { orderType: 'extra', orderId: request.id }
+    });
+
     const updated = await prisma.milkDeliveryRequest.update({
       where: { id },
       data: {
         acceptedQuantity: acceptedQty,
         totalQuantity: totalQty,
-        status: "CUSTOMER_ACCEPTED",
+        assignedDeliveryBoyId: boyId,
+        status: "EXTRA_ASSIGNED",
+        deliveryStatus: "EXTRA_ASSIGNED",
       },
       include: {
         customer: { select: { id: true, name: true, email: true } },

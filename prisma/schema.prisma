@@ -63,6 +63,24 @@ model Admin {
   approvedLeaves       DeliveryBoyLeave[]     @relation("AdminApprovedLeaves")
   deliveryRequests        MilkDeliveryRequest[]  @relation("CustomerDeliveryRequests")
   approvedDeliveryRequests MilkDeliveryRequest[] @relation("AdminApprovedRequests")
+  customerFeedbacks      OrderFeedback[]        @relation("CustomerFeedbacks")
+  deliveryFeedbacks      OrderFeedback[]        @relation("DeliveryBoyFeedbacks")
+  customerComplaints     CustomerComplaint[]    @relation("CustomerComplaints")
+  deliveryComplaints     CustomerComplaint[]    @relation("DeliveryBoyComplaints")
+  assignedComplaints     CustomerComplaint[]    @relation("AssignedStaffComplaints")
+  changedComplaintHistories ComplaintStatusHistory[] @relation("ComplaintHistoryChangedBy")
+  participantConversations ChatConversation[]     @relation("ParticipantConversations")
+  adminConversations       ChatConversation[]     @relation("AdminConversations")
+  sentChatMessages         ChatMessage[]          @relation("SentChatMessages")
+
+  // Referral & Coupon relations
+  referralCode             String?                @unique
+  referredById             Int?
+  referredBy               Admin?                 @relation("AdminReferrals", fields: [referredById], references: [id])
+  referredUsers            Admin[]                @relation("AdminReferrals")
+  referralsGiven           Referral[]             @relation("Referrer")
+  referralsReceived        Referral?              @relation("Referee")
+  assignedCoupons          UserCoupon[]
 }
 
 model ConversionRule {
@@ -541,9 +559,13 @@ model DeliveryAssignment {
   assignedAt           DateTime? @default(now())
   productCollectedAt   DateTime?
   outForDeliveryAt     DateTime?
+  deliveryStartTime    DateTime?
+  estimatedDeliveryTime DateTime?
   arrivedAt            DateTime?
   deliveryConfirmedAt  DateTime?
   customerConfirmedAt  DateTime?
+  deliveryCompletedAt  DateTime?
+  delayAlertSentAt     DateTime?
 
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
@@ -645,3 +667,204 @@ model MilkDeliveryRequest {
   @@index([customerId, deliveryDate])
   @@index([status, deliveryDate])
 }
+
+// ======================================
+// Feedback & Complaint Management Models
+// ======================================
+
+model OrderFeedback {
+  id                   Int      @id @default(autoincrement())
+  orderType            String   // 'trial' | 'subscription'
+  orderId              Int      // id of MilkTrial or MilkSubscription
+  customerId           Int
+  customer             Admin    @relation("CustomerFeedbacks", fields: [customerId], references: [id], onDelete: Cascade)
+  deliveryBoyId        Int?
+  deliveryBoy          Admin?   @relation("DeliveryBoyFeedbacks", fields: [deliveryBoyId], references: [id], onDelete: SetNull)
+  rating               Int      // 1 to 5 overall rating
+  deliveryBoyRating    Int?     // 1 to 5 delivery boy rating
+  productQualityRating Int?     // 1 to 5 product quality rating
+  review               String?
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+
+  @@unique([orderType, orderId])
+  @@index([customerId])
+  @@index([deliveryBoyId])
+  @@index([rating])
+}
+
+model CustomerComplaint {
+  id              Int                      @id @default(autoincrement())
+  complaintCode   String                   @unique // e.g. CMP-20261011-1234
+  orderType       String                   // 'trial' | 'subscription'
+  orderId         Int
+  customerId      Int
+  customer        Admin                    @relation("CustomerComplaints", fields: [customerId], references: [id], onDelete: Cascade)
+  deliveryBoyId   Int?
+  deliveryBoy     Admin?                   @relation("DeliveryBoyComplaints", fields: [deliveryBoyId], references: [id], onDelete: SetNull)
+  assignedStaffId Int?
+  assignedStaff   Admin?                   @relation("AssignedStaffComplaints", fields: [assignedStaffId], references: [id], onDelete: SetNull)
+  category        String                   // Late or incomplete delivery, Wrong milk quantity, Product quality, Missing product, Delivery boy behaviour, Payment issue, Other
+  description     String
+  attachment      String?                  // file path / URL
+  status          String                   @default("PENDING") // PENDING, IN_PROGRESS, RESOLVED, REOPENED
+  adminNotes      String?
+  resolutionNotes String?
+  resolvedAt      DateTime?
+  reopenedAt      DateTime?
+  reopenReason    String?
+  createdAt       DateTime                 @default(now())
+  updatedAt       DateTime                 @updatedAt
+  history         ComplaintStatusHistory[]
+
+  @@index([customerId])
+  @@index([status])
+  @@index([orderType, orderId])
+}
+
+model ComplaintStatusHistory {
+  id          Int               @id @default(autoincrement())
+  complaintId Int
+  complaint   CustomerComplaint @relation(fields: [complaintId], references: [id], onDelete: Cascade)
+  status      String            // PENDING, IN_PROGRESS, RESOLVED, REOPENED
+  actionBy    String            // "Customer" | "Admin" | "Staff"
+  changedById Int?
+  changedBy   Admin?            @relation("ComplaintHistoryChangedBy", fields: [changedById], references: [id], onDelete: SetNull)
+  notes       String?
+  createdAt   DateTime          @default(now())
+
+  @@index([complaintId])
+}
+
+model ChatConversation {
+  id              Int           @id @default(autoincrement())
+  participantId   Int
+  participant     Admin         @relation("ParticipantConversations", fields: [participantId], references: [id], onDelete: Cascade)
+  participantRole String        // "USER" | "DELIVERY_BOY"
+  adminId         Int?
+  admin           Admin?        @relation("AdminConversations", fields: [adminId], references: [id], onDelete: SetNull)
+  lastMessageAt   DateTime      @default(now())
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+  messages        ChatMessage[]
+
+  @@unique([participantId, participantRole])
+  @@index([participantRole])
+  @@index([lastMessageAt])
+}
+
+model ChatMessage {
+  id             Int              @id @default(autoincrement())
+  conversationId Int
+  conversation   ChatConversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  senderId       Int
+  sender         Admin            @relation("SentChatMessages", fields: [senderId], references: [id], onDelete: Cascade)
+  senderRole     String           // "ADMIN" | "USER" | "DELIVERY_BOY"
+  messageText    String           @db.Text
+  deliveredAt    DateTime?
+  readAt         DateTime?
+  createdAt      DateTime         @default(now())
+
+  @@index([conversationId])
+  @@index([senderId])
+  @@index([createdAt])
+}
+
+model DeliveryProof {
+  id              Int       @id @default(autoincrement())
+  orderType       String    // "sub" | "trial" | "extra"
+  orderId         Int
+  assignmentId    Int?
+  customerId      Int?
+  customerName    String?
+  deliveryBoyId   Int
+  deliveryBoyName String?
+  productId       Int?
+  productName     String?
+  itemLabel       String?
+  quantity        Float?
+  unit            String?
+  photoUrl        String
+  qrToken         String?
+  status          String    @default("VERIFIED") // "CAPTURED", "AWAITING_CONFIRMATION", "VERIFIED"
+  capturedAt      DateTime  @default(now())
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  @@index([orderType, orderId])
+  @@index([assignmentId])
+  @@index([deliveryBoyId])
+  @@index([customerId])
+}
+
+// ─── Referral and Coupon Reward Models ─────────────────────────────
+
+model Coupon {
+  id                 Int               @id @default(autoincrement())
+  code               String            @unique
+  description        String?
+  discountType       String            // "PERCENTAGE" | "FLAT"
+  value              Float
+  minOrderAmount     Float?            @default(0)
+  maxDiscount        Float?
+  validUntil         DateTime?
+  status             String            @default("ACTIVE") // "ACTIVE" | "EXPIRED" | "DISABLED"
+  targetProductName  String?
+  usageLimit         Int?
+  redemptionsCount   Int               @default(0)
+  isReferralReward   Boolean           @default(false)
+  createdAt          DateTime          @default(now())
+  updatedAt          DateTime          @updatedAt
+
+  userCoupons        UserCoupon[]
+  referrerSettings   ReferralSetting[] @relation("ReferrerCoupon")
+  refereeSettings    ReferralSetting[] @relation("RefereeCoupon")
+
+  @@index([status])
+  @@index([code])
+}
+
+model UserCoupon {
+  id          Int       @id @default(autoincrement())
+  userId      Int
+  user        Admin     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  couponId    Int
+  coupon      Coupon    @relation(fields: [couponId], references: [id], onDelete: Cascade)
+  status      String    @default("ACTIVE") // "ACTIVE" | "REDEEMED" | "EXPIRED"
+  source      String    @default("REFERRAL") // "REFERRAL" | "PROMOTION" | "SIGNUP"
+  assignedAt  DateTime  @default(now())
+  redeemedAt  DateTime?
+  orderId     Int?
+
+  @@index([userId, status])
+  @@index([couponId])
+}
+
+model ReferralSetting {
+  id                 Int       @id @default(autoincrement())
+  isEnabled          Boolean   @default(true)
+  rewardTarget       String    @default("BOTH") // "BOTH" | "REFERRER" | "REFEREE"
+  referrerCouponId   Int?
+  referrerCoupon     Coupon?   @relation("ReferrerCoupon", fields: [referrerCouponId], references: [id], onDelete: SetNull)
+  refereeCouponId    Int?
+  refereeCoupon      Coupon?   @relation("RefereeCoupon", fields: [refereeCouponId], references: [id], onDelete: SetNull)
+  updatedAt          DateTime  @updatedAt
+}
+
+model Referral {
+  id                   Int       @id @default(autoincrement())
+  referrerId           Int
+  referrer             Admin     @relation("Referrer", fields: [referrerId], references: [id], onDelete: Cascade)
+  refereeId            Int       @unique
+  referee              Admin     @relation("Referee", fields: [refereeId], references: [id], onDelete: Cascade)
+  status               String    @default("COMPLETED") // "COMPLETED" | "NO_REWARD"
+  referrerRewardStatus String    @default("NONE") // "AWARDED" | "NONE"
+  refereeRewardStatus  String    @default("NONE") // "AWARDED" | "NONE"
+  referrerCouponCode   String?
+  refereeCouponCode    String?
+  createdAt            DateTime  @default(now())
+
+  @@index([referrerId])
+  @@index([refereeId])
+}
+

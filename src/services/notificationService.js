@@ -554,20 +554,126 @@ async function notifyDeliveryDateChanged({
 // 6. DELIVERY STATUS FLOWS (Out for delivery, Completed, Failed, Cancelled)
 // =========================================================================
 
-async function notifyOutForDelivery({ orderId, orderType, customerUserId, boyId, adminId }) {
+async function notifyOutForDelivery({
+  orderId,
+  orderType,
+  customerUserId,
+  boyId,
+  boyName,
+  boyPhone,
+  adminId,
+  deliveryStartTime,
+  estimatedDeliveryTime,
+  estimatedMinutes = 30
+}) {
+  let finalBoyName = boyName;
+  let finalBoyPhone = boyPhone;
+
+  if (boyId && (!finalBoyName || !finalBoyPhone)) {
+    try {
+      const boy = await prisma.admin.findUnique({
+        where: { id: boyId },
+        include: { deliveryProfile: true }
+      });
+      if (boy) {
+        finalBoyName = finalBoyName || boy.name;
+        finalBoyPhone = finalBoyPhone || boy.deliveryProfile?.mobile || boy.mobile;
+      }
+    } catch (e) {
+      console.error("[notifyOutForDelivery boy query err]", e);
+    }
+  }
+
+  const etaDate = estimatedDeliveryTime || new Date(Date.now() + estimatedMinutes * 60 * 1000);
+  const formattedEta = new Date(etaDate).toLocaleTimeString("en-IN", {
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: true
+  });
+
+  const boyDetails = finalBoyName
+    ? ` Delivery Boy: ${finalBoyName}${finalBoyPhone ? ` (${finalBoyPhone})` : ""}.`
+    : "";
+
+  const title = "Your order is on the way!";
+  const message = `🚚 Your order is on the way!${boyDetails} Estimated Delivery Time (ETA): ${formattedEta}.`;
+
   if (customerUserId) {
     await createNotification({
       userId: customerUserId,
       role: "USER",
       type: "DELIVERY_OUT_FOR_DELIVERY",
-      title: "Out for Delivery",
-      message: `🚚 Your delivery is on the way. Your product has been collected and the delivery boy has started the delivery.`,
+      title,
+      message,
       entityType: "DELIVERY",
       entityId: orderId,
       orderType,
       orderId,
+      isSpecialAlert: true,
+      priority: "HIGH",
       actionType: "TRACK_DELIVERY",
-      actionUrl: "/admin/products?tab=track"
+      actionUrl: "/admin/products?tab=track",
+      metadata: {
+        orderId,
+        orderType,
+        deliveryBoyName: finalBoyName,
+        deliveryBoyPhone: finalBoyPhone,
+        estimatedDeliveryTime: etaDate,
+        formattedEta
+      }
+    });
+  }
+}
+
+async function notifyDeliveryDelay({
+  orderId,
+  orderType,
+  customerName,
+  boyName,
+  boyPhone,
+  deliveryStartTime,
+  expectedDeliveryTime,
+  delayMinutes,
+  deliveryStatus,
+  adminId
+}) {
+  const adminIds = adminId ? [adminId] : await getAdminUserIds();
+  const startTimeStr = deliveryStartTime
+    ? new Date(deliveryStartTime).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit", hour12: true })
+    : "N/A";
+  const etaStr = expectedDeliveryTime
+    ? new Date(expectedDeliveryTime).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit", hour12: true })
+    : "N/A";
+
+  const title = `⚠️ Delivery Delay Alert: Order #${orderId}`;
+  const message = `Delivery Delay Alert: Order #${orderId} for customer ${customerName || "Customer"} (Delivery Boy: ${boyName || "Partner"}) is delayed by ${delayMinutes} minutes. Delivery started at ${startTimeStr}, expected by ${etaStr}. Current status: ${deliveryStatus || "Out for Delivery"}.`;
+
+  for (const aId of adminIds) {
+    await createNotification({
+      userId: aId,
+      role: "ADMIN",
+      type: "DELIVERY_DELAY_ALERT",
+      title,
+      message,
+      entityType: "DELIVERY",
+      entityId: orderId,
+      orderType,
+      orderId,
+      isSpecialAlert: true,
+      priority: "HIGH",
+      actionType: "VIEW_DELIVERY",
+      actionUrl: "/milk-admin/dashboard?tab=my-deliveries",
+      metadata: {
+        orderId,
+        orderType,
+        customerName,
+        boyName,
+        boyPhone,
+        deliveryStartTime,
+        expectedDeliveryTime,
+        delayMinutes,
+        deliveryStatus
+      }
     });
   }
 }
@@ -854,7 +960,7 @@ async function notifyExtraDeliveryOffered({ customerUserId, requestId, requested
       priority: "HIGH",
       isSpecialAlert: true,
       actionType: "VIEW_DELIVERY_REQUESTS",
-      actionUrl: "/admin/products"
+      actionUrl: "/admin/products?tab=extra-delivery"
     });
   }
 }
@@ -871,7 +977,7 @@ async function notifyExtraDeliveryAccepted({ customerUserId, requestId, accepted
       entityId: requestId,
       priority: "NORMAL",
       actionType: "VIEW_DELIVERY_REQUESTS",
-      actionUrl: "/admin/products"
+      actionUrl: "/admin/products?tab=extra-delivery"
     });
   }
 }
@@ -894,5 +1000,6 @@ module.exports = {
   notifyDeliveryCancelled,
   notifyDeliveryIssue,
   notifyExtraDeliveryOffered,
-  notifyExtraDeliveryAccepted
+  notifyExtraDeliveryAccepted,
+  notifyDeliveryDelay
 };

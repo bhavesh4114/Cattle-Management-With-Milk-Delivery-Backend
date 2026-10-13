@@ -24,6 +24,12 @@ const productRoutes = require("./src/routes/productRoutes");
 const alertRoutes = require("./src/routes/alertRoutes");
 const userQrRoutes = require("./src/routes/userQrRoutes");
 const milkDeliveryRequestRoutes = require("./src/routes/milkDeliveryRequestRoutes");
+const feedbackComplaintRoutes = require("./src/routes/feedbackComplaintRoutes");
+const chatRoutes = require("./src/routes/chatRoutes");
+const referralRoutes = require("./src/routes/referralRoutes");
+const couponRoutes = require("./src/routes/couponRoutes");
+const http = require("http");
+const { initSocket } = require("./src/socket/chatSocket");
 
 const app = express();
 app.use(express.json({ limit: "50mb" }));
@@ -92,6 +98,11 @@ app.use("/api/alerts", alertRoutes);
 app.use("/api/users", userQrRoutes);
 app.use("/api/milk-delivery-requests", milkDeliveryRequestRoutes);
 app.use("/api/delivery-requests", milkDeliveryRequestRoutes);
+app.use("/api/feedback-complaints", feedbackComplaintRoutes);
+app.use("/api/chat", chatRoutes);
+app.use("/api/referral", referralRoutes);
+app.use("/api/referrals", referralRoutes);
+app.use("/api/coupons", couponRoutes);
 
 app.use((err, req, res, next) => {
   console.error("[server] request failed", {
@@ -111,11 +122,22 @@ app.use((err, req, res, next) => {
 
 if (require.main === module) {
   const PORT = process.env.PORT || 5100;
-  const server = app.listen(PORT, "0.0.0.0", () => {
-    console.log(`Backend running successfully on port ${PORT}`);
+  const deliveryDelayService = require("./src/services/deliveryDelayService");
+  const referralService = require("./src/services/referralService");
+  const server = http.createServer(app);
+  initSocket(server, isAllowedOrigin);
+
+  server.listen(PORT, "0.0.0.0", async () => {
+    console.log(`Backend running successfully with Socket.IO on port ${PORT}`);
+    // Start automated backend delivery delay checking
+    deliveryDelayService.startMonitoring();
+    // Initialize default coupons, referral settings, and backfill user codes
+    await referralService.backfillExistingUsers();
+    await referralService.initDefaultCouponsAndSettings();
   });
 
   process.on("SIGTERM", () => {
+    deliveryDelayService.stopMonitoring();
     server.close(() => process.exit(0));
   });
 }
@@ -130,4 +152,6 @@ module.exports = app;
 
 // Trigger restart 3
 
-// Trigger restart 6
+// Trigger restart 8
+
+

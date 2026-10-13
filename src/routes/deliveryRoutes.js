@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const dc = require('../controllers/deliveryController');
 const { authenticateAdmin } = require('../middleware/auth');
+const { handleProofUpload } = require('../middleware/deliveryProofUpload');
 
 router.use(authenticateAdmin);
 
@@ -32,7 +33,10 @@ router.get('/my-notifications', dc.getMyNotifications);
 // Order Tracking (User side)
 router.get('/track', dc.getOrderTrackingStatus);
 
-// Door QR + user confirmation
+// Door QR + user confirmation + proof photo
+router.post('/upload-proof', handleProofUpload, dc.uploadDeliveryProof);
+router.get('/proofs/:orderType/:orderId', dc.getDeliveryProofs);
+router.get('/:orderId/proofs', dc.getDeliveryProofs);
 router.post('/generate-daily-qr', dc.generateDailyDeliveries);
 router.post('/scan-qr', dc.scanQRCode);
 router.post('/:orderId/request-confirmation', dc.requestDeliveryConfirmation);
@@ -55,5 +59,9 @@ router.patch('/admin/leaves/:id/reject', dc.rejectLeave);
 // Reassignment Queue (Admin)
 router.get('/admin/reassignments', dc.getReassignmentQueue);
 router.patch('/admin/reassign/:assignmentId', dc.manualReassign);
+
+// Delivery Delay Alerts (Admin & System)
+router.post('/admin/check-delays', dc.triggerDelayCheck);
+router.get('/admin/delayed-deliveries', dc.getDelayedDeliveries);
 
 module.exports = router;

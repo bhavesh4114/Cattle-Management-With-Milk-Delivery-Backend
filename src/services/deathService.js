@@ -4,13 +4,13 @@ const { toNumber, toDate, toNullableNumber } = require("../utils/helpers");
 const getDeaths = async (adminId) => {
   return prisma.cowDeath.findMany({
     where: { adminId },
-    include: { 
+    include: {
       cow: {
         include: {
           reproductionRecords: true,
           treatments: true
         }
-      } 
+      }
     },
     orderBy: { deathAt: "desc" },
   });

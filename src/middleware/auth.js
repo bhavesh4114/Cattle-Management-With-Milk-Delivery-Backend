@@ -90,4 +90,19 @@ const requirePermission = (feature, action = null) => {
   };
 };
 
-module.exports = { authenticateAdmin, requirePermission };
+const optionalAuthenticateAdmin = async (req, res, next) => {
+  const authHeader = req.headers.authorization || "";
+  const token = authHeader.startsWith("Bearer ") ? authHeader.slice(7) : "";
+  if (!token) return next();
+
+  try {
+    if (!process.env.JWT_SECRET) return next();
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    req.admin = decoded;
+  } catch (err) {
+    // Ignore invalid token in optional auth
+  }
+  next();
+};
+
+module.exports = { authenticateAdmin, requirePermission, optionalAuthenticateAdmin };

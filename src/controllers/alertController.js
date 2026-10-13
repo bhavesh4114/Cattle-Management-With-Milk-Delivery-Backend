@@ -71,6 +71,18 @@ exports.sendAlerts = async (req, res) => {
 // ROLE-BASED NOTIFICATION CENTER APIS
 // =========================================================================
 
+function isDeliveryAlert(n) {
+  if (!n) return false;
+  if (n.deliveryId || n.orderId || n.orderType) return true;
+  const et = String(n.entityType || '').toUpperCase();
+  if (['DELIVERY', 'BOOKING', 'LEAVE', 'MILKDELIVERYREQUEST', 'FEEDBACK_COMPLAINT', 'REASSIGNMENT', 'ORDER'].includes(et)) return true;
+  const t = String(n.type || '').toUpperCase();
+  if (t.includes('DELIVERY') || t.includes('BOOKING') || t.includes('LEAVE') || t.includes('REASSIGN') || t.includes('DELAY') || t.includes('EXTRA_DELIVERY') || t.includes('TRIAL') || t.includes('SUBSCRIPTION')) return true;
+  const url = String(n.actionUrl || '').toLowerCase();
+  if (url.includes('milk-admin') || url.includes('orders') || url.includes('delivery') || url.includes('booking')) return true;
+  return false;
+}
+
 // GET /api/alerts/notifications
 // Retrieves notifications for the currently authenticated user
 exports.getNotifications = async (req, res) => {
@@ -78,7 +90,7 @@ exports.getNotifications = async (req, res) => {
     const userId = req.admin?.id;
     if (!userId) return res.status(401).json({ error: 'User not authenticated' });
 
-    const { unreadOnly, limit = 50, includeSpecial } = req.query;
+    const { unreadOnly, limit = 50, includeSpecial, panel } = req.query;
     const where = { userId };
     
     if (unreadOnly === 'true') {
@@ -94,7 +106,14 @@ exports.getNotifications = async (req, res) => {
       take: parseInt(limit, 10)
     });
 
-    res.json(notifications);
+    let result = notifications;
+    if (panel === 'cattle') {
+      result = notifications.filter(n => !isDeliveryAlert(n));
+    } else if (panel === 'milk' || panel === 'delivery') {
+      result = notifications.filter(n => isDeliveryAlert(n));
+    }
+
+    res.json(result);
   } catch (error) {
     console.error('Error fetching notifications:', error);
     res.status(500).json({ error: 'Failed to fetch notifications' });
@@ -151,29 +170,35 @@ exports.getSpecialAlerts = async (req, res) => {
     const userId = req.admin?.id;
     if (!userId) return res.status(401).json({ error: 'User not authenticated' });
 
+    const { panel } = req.query;
+
+    const fetchAlerts = async () => {
+      return await prisma.userAlert.findMany({
+        where: {
+          userId,
+          isSpecialAlert: true,
+          isDismissed: false
+        },
+        orderBy: { createdAt: 'desc' }
+      });
+    };
+
+    let alerts;
     try {
-      const alerts = await prisma.userAlert.findMany({
-        where: {
-          userId,
-          isSpecialAlert: true,
-          isDismissed: false
-        },
-        orderBy: { createdAt: 'desc' }
-      });
-      return res.json(alerts);
+      alerts = await fetchAlerts();
     } catch (dbErr) {
-      // If live database is missing columns, run self-healing migration and retry
       await ensureUserAlertColumns();
-      const alerts = await prisma.userAlert.findMany({
-        where: {
-          userId,
-          isSpecialAlert: true,
-          isDismissed: false
-        },
-        orderBy: { createdAt: 'desc' }
-      });
-      return res.json(alerts);
+      alerts = await fetchAlerts();
     }
+
+    let result = alerts;
+    if (panel === 'cattle') {
+      result = alerts.filter(n => !isDeliveryAlert(n));
+    } else if (panel === 'milk' || panel === 'delivery') {
+      result = alerts.filter(n => isDeliveryAlert(n));
+    }
+
+    return res.json(result);
   } catch (error) {
     console.error('Error fetching special alerts:', error);
     res.status(500).json({ error: 'Failed to fetch special alerts' });
@@ -187,28 +212,50 @@ exports.getUnreadCount = async (req, res) => {
     const userId = req.admin?.id;
     if (!userId) return res.status(401).json({ error: 'User not authenticated' });
 
+    const { panel } = req.query;
+
+    const fetchCounts = async () => {
+      if (panel) {
+        const activeAlerts = await prisma.userAlert.findMany({
+          where: {
+            userId,
+            OR: [
+              { isRead: false, isSpecialAlert: false },
+              { isSpecialAlert: true, isDismissed: false }
+            ]
+          }
+        });
+
+        let filtered = activeAlerts;
+        if (panel === 'cattle') {
+          filtered = activeAlerts.filter(n => !isDeliveryAlert(n));
+        } else if (panel === 'milk' || panel === 'delivery') {
+          filtered = activeAlerts.filter(n => isDeliveryAlert(n));
+        }
+
+        const unreadCount = filtered.filter(n => !n.isSpecialAlert && !n.isRead).length;
+        const specialCount = filtered.filter(n => n.isSpecialAlert && !n.isDismissed).length;
+        return { unreadCount, specialCount };
+      }
+
+      const [unreadCount, specialCount] = await Promise.all([
+        prisma.userAlert.count({
+          where: { userId, isRead: false, isSpecialAlert: false }
+        }),
+        prisma.userAlert.count({
+          where: { userId, isSpecialAlert: true, isDismissed: false }
+        })
+      ]);
+      return { unreadCount, specialCount };
+    };
+
     try {
-      const [unreadCount, specialCount] = await Promise.all([
-        prisma.userAlert.count({
-          where: { userId, isRead: false, isSpecialAlert: false }
-        }),
-        prisma.userAlert.count({
-          where: { userId, isSpecialAlert: true, isDismissed: false }
-        })
-      ]);
-      return res.json({ unreadCount, specialCount });
+      const counts = await fetchCounts();
+      return res.json(counts);
     } catch (dbErr) {
-      // If live database is missing columns, run self-healing migration and retry
       await ensureUserAlertColumns();
-      const [unreadCount, specialCount] = await Promise.all([
-        prisma.userAlert.count({
-          where: { userId, isRead: false, isSpecialAlert: false }
-        }),
-        prisma.userAlert.count({
-          where: { userId, isSpecialAlert: true, isDismissed: false }
-        })
-      ]);
-      return res.json({ unreadCount, specialCount });
+      const counts = await fetchCounts();
+      return res.json(counts);
     }
   } catch (error) {
     console.error('Error fetching unread count:', error);
