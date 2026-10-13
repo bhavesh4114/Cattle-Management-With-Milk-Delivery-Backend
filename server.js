@@ -54,18 +54,39 @@ const isAllowedOrigin = (origin) => (
   allowedOriginPatterns.some((pattern) => pattern.test(origin))
 );
 
+app.use((req, res, next) => {
+  const origin = req.headers.origin;
+  if (origin && isAllowedOrigin(origin)) {
+    res.setHeader("Access-Control-Allow-Origin", origin);
+    res.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, PATCH, OPTIONS");
+    res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With, Accept");
+  }
+  if (req.method === "OPTIONS") {
+    return res.status(204).end();
+  }
+  next();
+});
+
 app.use(cors({
   origin(origin, callback) {
     if (!origin || isAllowedOrigin(origin)) {
       return callback(null, true);
     }
 
-    return callback(new Error(`CORS blocked origin: ${origin}`));
+    return callback(null, false);
   },
   credentials: false,
 }));
 
 app.use("/uploads", express.static(path.join(__dirname, "uploads")));
+
+app.get("/", (req, res) => {
+  res.json({ status: "ok", message: "Backend is running" });
+});
+
+app.get("/api", (req, res) => {
+  res.json({ status: "ok", message: "API is running" });
+});
 
 app.get("/api/health", (req, res) => {
   res.json({
