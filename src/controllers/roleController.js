@@ -110,7 +110,6 @@ const deleteRole = async (req, res) => {
 const getUsers = async (req, res) => {
   try {
     const users = await prisma.admin.findMany({
-      where: { role: "CUSTOM" },
       include: { customRole: true },
       orderBy: { createdAt: "desc" }
     });
@@ -122,9 +121,18 @@ const getUsers = async (req, res) => {
 
 const createUser = async (req, res) => {
   try {
-    const { name, email, password, status, customRoleId } = req.body;
+    const { name, email, password, status, customRoleId, role: userRole } = req.body;
     
-    if (!customRoleId) return res.status(400).json({ message: "Role is required" });
+    let roleType = "CUSTOM";
+    let targetRoleId = null;
+
+    if (customRoleId === "ADMIN" || customRoleId === "admin" || userRole === "ADMIN" || userRole === "admin") {
+      roleType = "ADMIN";
+    } else if (customRoleId) {
+      targetRoleId = parseInt(customRoleId);
+    } else {
+      return res.status(400).json({ message: "Role is required" });
+    }
 
     const existingAdmin = await prisma.admin.findUnique({ where: { email } });
     if (existingAdmin) {
@@ -138,15 +146,15 @@ const createUser = async (req, res) => {
         name,
         email,
         password: hashedPassword,
-        role: "CUSTOM",
-        customRoleId: parseInt(customRoleId),
+        role: roleType,
+        customRoleId: targetRoleId,
         status: status || "Active"
       }
     });
 
-    if (req.body.permissions && Array.isArray(req.body.permissions) && customRoleId) {
+    if (req.body.permissions && Array.isArray(req.body.permissions) && targetRoleId) {
       await prisma.customRole.update({
-        where: { id: parseInt(customRoleId) },
+        where: { id: targetRoleId },
         data: { permissions: req.body.permissions }
       });
     }
@@ -160,7 +168,7 @@ const createUser = async (req, res) => {
 const updateUser = async (req, res) => {
   try {
     const { id } = req.params;
-    const { name, email, password, status, customRoleId, permissions } = req.body;
+    const { name, email, password, status, customRoleId, role: userRole, permissions } = req.body;
     const userId = parseInt(id);
 
     const admin = await prisma.admin.findUnique({ where: { id: userId } });
@@ -175,8 +183,15 @@ const updateUser = async (req, res) => {
       ...(name && { name }),
       ...(email && { email }),
       ...(status && { status }),
-      ...(customRoleId && { customRoleId: parseInt(customRoleId) })
     };
+
+    if (customRoleId === "ADMIN" || customRoleId === "admin" || userRole === "ADMIN" || userRole === "admin") {
+      updateData.role = "ADMIN";
+      updateData.customRoleId = null;
+    } else if (customRoleId) {
+      updateData.role = "CUSTOM";
+      updateData.customRoleId = parseInt(customRoleId);
+    }
 
     if (password && password !== "••••••••") {
       updateData.password = await bcrypt.hash(password, 10);
