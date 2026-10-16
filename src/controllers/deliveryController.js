@@ -450,6 +450,11 @@ exports.updateDeliveryStatus = async (req, res) => {
                 message: 'Direct marking as Delivered is not allowed. Customer must confirm receipt.'
             });
         }
+        if (normTarget === 'DELIVERY_PENDING_CUSTOMER_CONFIRMATION' || normTarget === 'AWAITING_USER_CONFIRMATION') {
+            return res.status(400).json({
+                message: 'Use the door QR scan and photo proof flow to request customer confirmation.'
+            });
+        }
 
         let extraData = {
             deliveryStatus,
@@ -958,7 +963,7 @@ exports.getOrderTrackingStatus = async (req, res) => {
             deliveryStartTime: assignment?.deliveryStartTime || assignment?.outForDeliveryAt || null,
             deliveryCompletedAt: assignment?.deliveryCompletedAt || assignment?.deliveredAt || null,
             isDelayed: Boolean(assignment?.estimatedDeliveryTime && new Date() > new Date(assignment.estimatedDeliveryTime) && !assignment?.deliveredAt && !assignment?.deliveryCompletedAt),
-            canCustomerConfirm: ['DELIVERY_PENDING_CUSTOMER_CONFIRMATION', 'AWAITING_USER_CONFIRMATION', 'ARRIVED', 'OUT_FOR_DELIVERY'].includes((assignment?.deliveryStatus || rawDeliveryStatus || '').toUpperCase().replace(/ /g, '_')) && !['Delivered', 'DELIVERED'].includes(rawDeliveryStatus),
+            canCustomerConfirm: ['DELIVERY_PENDING_CUSTOMER_CONFIRMATION', 'AWAITING_USER_CONFIRMATION'].includes((assignment?.deliveryStatus || rawDeliveryStatus || '').toUpperCase().replace(/ /g, '_')) && Boolean(assignment?.deliveryProof || deliveryProofs[0]?.photoUrl) && !['Delivered', 'DELIVERED'].includes(rawDeliveryStatus),
             deliveryProof: assignment?.deliveryProof || deliveryProofs[0]?.photoUrl || null,
             deliveryProofs: deliveryProofs.map(p => ({
                 id: p.id,
@@ -1164,6 +1169,13 @@ exports.scanQRCode = async (req, res) => {
             return res.status(404).json({ message: 'No active order assigned to you for this customer.' });
         }
 
+        const notArrived = matches.filter(({ assignment }) =>
+            !assignment.arrivedAt && !['ARRIVED', 'QR_SCANNED'].includes((assignment.deliveryStatus || '').toUpperCase())
+        );
+        if (notArrived.length > 0) {
+            return res.status(400).json({ message: 'Mark the delivery as arrived before scanning the customer door QR.' });
+        }
+
         const now = new Date();
         await prisma.$transaction(async (tx) => {
             for (const { assignment } of matches) {
@@ -1245,10 +1257,10 @@ exports.requestDeliveryConfirmation = async (req, res) => {
                 data: {
                     selectedItems,
                     deliveryProof: resolvedPhotoUrl,
-                    deliveryStatus: 'AWAITING_USER_CONFIRMATION'
+                    deliveryStatus: 'DELIVERY_PENDING_CUSTOMER_CONFIRMATION'
                 },
             });
-            await updateOrderDeliveryStatus(tx, orderType, orderId, 'AWAITING_USER_CONFIRMATION');
+            await updateOrderDeliveryStatus(tx, orderType, orderId, 'DELIVERY_PENDING_CUSTOMER_CONFIRMATION');
 
             // Persist structured proof record
             await tx.deliveryProof.create({
@@ -1267,7 +1279,7 @@ exports.requestDeliveryConfirmation = async (req, res) => {
                     unit: selectedItems[0]?.unit || 'L',
                     photoUrl: resolvedPhotoUrl,
                     qrToken: assignment.qrCode || null,
-                    status: 'AWAITING_USER_CONFIRMATION',
+                    status: 'DELIVERY_PENDING_CUSTOMER_CONFIRMATION',
                     capturedAt: new Date(),
                 }
             });
@@ -1290,14 +1302,14 @@ exports.requestDeliveryConfirmation = async (req, res) => {
                     deliveryBoyId,
                     qrScannedAt: assignment.qrScannedAt,
                     itemsSelected: selectedItems,
-                    status: 'AWAITING_USER_CONFIRMATION',
+                    status: 'DELIVERY_PENDING_CUSTOMER_CONFIRMATION',
                     action: 'REQUESTED_USER_CONFIRMATION',
                     metadata: { assignmentId: assignment.id, deliveryProof: resolvedPhotoUrl },
                 },
             });
         });
 
-        res.json({ message: 'User confirmation requested.', status: 'AWAITING_USER_CONFIRMATION', selectedItems, deliveryProof: resolvedPhotoUrl });
+        res.json({ message: 'User confirmation requested.', status: 'DELIVERY_PENDING_CUSTOMER_CONFIRMATION', selectedItems, deliveryProof: resolvedPhotoUrl });
     } catch (error) { res.status(500).json({ message: 'Server error', error: error.message }); }
 };
 
@@ -1335,11 +1347,14 @@ exports.confirmDelivery = async (req, res) => {
                     orderType,
                     orderId,
                     isActive: true,
-                    deliveryStatus: { in: ['DELIVERY_PENDING_CUSTOMER_CONFIRMATION', 'AWAITING_USER_CONFIRMATION', 'ARRIVED', 'OUT_FOR_DELIVERY'] }
+                    deliveryStatus: { in: ['DELIVERY_PENDING_CUSTOMER_CONFIRMATION', 'AWAITING_USER_CONFIRMATION'] }
                 },
                 include: { deliveryBoy: { select: { id: true, name: true } } },
             });
             if (!assignment) throw Object.assign(new Error('No delivery is currently awaiting customer confirmation.'), { status: 400 });
+            if (!assignment.deliveryProof) {
+                throw Object.assign(new Error('Delivery photo proof is required before customer confirmation.'), { status: 400 });
+            }
 
             const updatedAssignment = await tx.deliveryAssignment.update({
                 where: { id: assignment.id },
